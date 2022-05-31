@@ -14,6 +14,7 @@ import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.ComposableIndexTemplate.DataStreamTemplate;
 import org.elasticsearch.cluster.metadata.MetadataCreateDataStreamService.CreateDataStreamClusterStateUpdateRequest;
+import org.elasticsearch.cluster.routing.allocation.allocator.DesiredBalanceShardsAllocator;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.Maps;
@@ -55,7 +56,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
             .metadata(Metadata.builder().put("template", template).build())
             .build();
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
-        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req);
+        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME);
         assertThat(newState.metadata().dataStreams().size(), equalTo(1));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).getName(), equalTo(dataStreamName));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).isSystem(), is(false));
@@ -86,7 +87,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
             .metadata(Metadata.builder().put("template", template).build())
             .build();
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
-        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req);
+        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME);
         assertThat(newState.metadata().dataStreams().size(), equalTo(1));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).getName(), equalTo(dataStreamName));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).isSystem(), is(false));
@@ -156,7 +157,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
             .metadata(metadataBuilder.put("template", template).build())
             .build();
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
-        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req);
+        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME);
         assertThat(newState.metadata().dataStreams().size(), equalTo(1));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).getName(), equalTo(dataStreamName));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).isSystem(), is(false));
@@ -203,7 +204,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
             TimeValue.ZERO,
             true
         );
-        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req);
+        ClusterState newState = MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME);
         assertThat(newState.metadata().dataStreams().size(), equalTo(1));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).getName(), equalTo(dataStreamName));
         assertThat(newState.metadata().dataStreams().get(dataStreamName).isSystem(), is(true));
@@ -229,7 +230,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
 
         ResourceAlreadyExistsException e = expectThrows(
             ResourceAlreadyExistsException.class,
-            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req)
+            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME)
         );
         assertThat(e.getMessage(), containsString("data_stream [" + dataStreamName + "] already exists"));
     }
@@ -241,7 +242,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
         IllegalArgumentException e = expectThrows(
             IllegalArgumentException.class,
-            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req)
+            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME)
         );
         assertThat(e.getMessage(), containsString("must not contain the following characters"));
     }
@@ -253,7 +254,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
         IllegalArgumentException e = expectThrows(
             IllegalArgumentException.class,
-            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req)
+            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME)
         );
         assertThat(e.getMessage(), containsString("data_stream [" + dataStreamName + "] must be lowercase"));
     }
@@ -265,7 +266,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
         IllegalArgumentException e = expectThrows(
             IllegalArgumentException.class,
-            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req)
+            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME)
         );
         assertThat(e.getMessage(), containsString("data_stream [" + dataStreamName + "] must not start with '.ds-'"));
     }
@@ -277,7 +278,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
         Exception e = expectThrows(
             IllegalArgumentException.class,
-            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req)
+            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME)
         );
         assertThat(e.getMessage(), equalTo("no matching index template found for data stream [my-data-stream]"));
     }
@@ -292,7 +293,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
         Exception e = expectThrows(
             IllegalArgumentException.class,
-            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req)
+            () -> MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME)
         );
         assertThat(
             e.getMessage(),
@@ -309,7 +310,7 @@ public class MetadataCreateDataStreamServiceTests extends ESTestCase {
             .metadata(Metadata.builder().put("template", template).build())
             .build();
         CreateDataStreamClusterStateUpdateRequest req = new CreateDataStreamClusterStateUpdateRequest(dataStreamName);
-        return MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req);
+        return MetadataCreateDataStreamService.createDataStream(metadataCreateIndexService, cs, req, DesiredBalanceShardsAllocator.REMOVE_ME);
     }
 
     private static MetadataCreateIndexService getMetadataCreateIndexService() throws Exception {
