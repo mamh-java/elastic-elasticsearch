@@ -25,6 +25,7 @@ import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.metadata.ComposableIndexTemplate;
 import org.elasticsearch.cluster.metadata.DataStreamLifecycle;
+import org.elasticsearch.cluster.metadata.DataStreamOptions;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.metadata.Template;
 import org.elasticsearch.common.Strings;
@@ -336,10 +337,11 @@ public class DataStreamLifecycleDownsamplingSecurityIT extends SecurityIntegTest
         @Nullable DataStreamLifecycle lifecycle
     ) {
         TransportPutComposableIndexTemplateAction.Request request = new TransportPutComposableIndexTemplateAction.Request(id);
+        DataStreamOptions dataStreamOptions = lifecycle == null ? null : DataStreamOptions.newBuilder().setLifecycle(lifecycle).build();
         request.indexTemplate(
             ComposableIndexTemplate.builder()
                 .indexPatterns(patterns)
-                .template(new Template(settings, mappings, null, lifecycle))
+                .template(new Template(settings, mappings, null, null, dataStreamOptions))
                 .metadata(metadata)
                 .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
                 .build()
@@ -432,6 +434,7 @@ public class DataStreamLifecycleDownsamplingSecurityIT extends SecurityIntegTest
                 .putList(IndexMetadata.INDEX_ROUTING_PATH.getKey(), List.of(FIELD_DIMENSION_1));
 
             try {
+                var dataStreamOptions = DataStreamOptions.newBuilder().setLifecycle(LIFECYCLE).build();
                 return List.of(
                     new SystemDataStreamDescriptor(
                         SYSTEM_DATA_STREAM_NAME,
@@ -439,7 +442,7 @@ public class DataStreamLifecycleDownsamplingSecurityIT extends SecurityIntegTest
                         SystemDataStreamDescriptor.Type.EXTERNAL,
                         ComposableIndexTemplate.builder()
                             .indexPatterns(List.of(SYSTEM_DATA_STREAM_NAME))
-                            .template(new Template(settings.build(), getTSDBMappings(), null, LIFECYCLE))
+                            .template(new Template(settings.build(), getTSDBMappings(), null, null, dataStreamOptions))
                             .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
                             .build(),
                         Map.of(),

@@ -12,9 +12,11 @@ setup:
         name: my-template
         body:
           index_patterns: [data-*]
-          data_stream:
-            failure_store: true
+          data_stream: {}
           template:
+            data_stream_options:
+              failure_store:
+                enabled: true
             mappings:
               properties:
                 '@timestamp':
@@ -223,9 +225,11 @@ teardown:
         name: my-template
         body:
           index_patterns: [data-*]
-          data_stream:
-            failure_store: true
+          data_stream: {}
           template:
+            data_stream_options:
+              failure_store:
+                enabled: true
             settings:
               index:
                 default_pipeline: "failing_pipeline"

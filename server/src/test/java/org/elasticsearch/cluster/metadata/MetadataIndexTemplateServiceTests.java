@@ -1610,7 +1610,8 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         String name,
         DataStreamLifecycle lifecycle
     ) throws Exception {
-        ComponentTemplate ct = new ComponentTemplate(new Template(null, null, null, lifecycle), null, null);
+        var dataStreamOptions = lifecycle == null ? null : DataStreamOptions.newBuilder().setLifecycle(lifecycle).build();
+        ComponentTemplate ct = new ComponentTemplate(new Template(null, null, null, null, dataStreamOptions), null, null);
         return service.addComponentTemplate(state, true, name, ct);
     }
 
@@ -1621,9 +1622,10 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         DataStreamLifecycle lifecycleZ,
         DataStreamLifecycle expected
     ) throws Exception {
+        var dataStreamOptions = lifecycleZ == null ? null : DataStreamOptions.newBuilder().setLifecycle(lifecycleZ).build();
         ComposableIndexTemplate it = ComposableIndexTemplate.builder()
             .indexPatterns(List.of(randomAlphaOfLength(10) + "*"))
-            .template(new Template(null, null, null, lifecycleZ))
+            .template(new Template(null, null, null, null, dataStreamOptions))
             .componentTemplates(composeOf)
             .priority(0L)
             .version(1L)
@@ -1631,7 +1633,11 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
             .build();
         state = service.addIndexTemplateV2(state, true, "my-template", it);
 
-        DataStreamLifecycle resolvedLifecycle = MetadataIndexTemplateService.resolveLifecycle(state.metadata(), "my-template");
+        DataStreamOptions resolvedOptions = MetadataIndexTemplateService.resolveDataStreamOptions(
+            it,
+            state.metadata().componentTemplates()
+        );
+        DataStreamLifecycle resolvedLifecycle = resolvedOptions == null ? null : resolvedOptions.lifecycle();
         assertThat(resolvedLifecycle, equalTo(expected));
     }
 
@@ -1846,8 +1852,9 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         final MetadataIndexTemplateService service = getMetadataIndexTemplateService();
         ClusterState state = ClusterState.EMPTY_STATE;
 
+        var lifecycle = DataStreamLifecycle.newBuilder().dataRetention(randomMillisUpToYear9999()).build();
         ComponentTemplate ct = new ComponentTemplate(
-            new Template(null, null, null, DataStreamLifecycle.newBuilder().dataRetention(randomMillisUpToYear9999()).build()),
+            new Template(null, null, null, null, DataStreamOptions.newBuilder().setLifecycle(lifecycle).build()),
             null,
             null
         );
@@ -1866,8 +1873,33 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         assertThat(
             e.getMessage(),
             matchesRegex(
-                "index template \\[my-template\\] specifies lifecycle configuration that can only be used in combination with a data stream"
+                "index template \\[my-template\\] specifies data stream options, which can only be used in combination with a data stream"
             )
+        );
+    }
+
+    /**
+     * Tests that we only allow one lifecycle configuration in a template.
+     */
+    public void testExclusiveLifecycleConfiguration() throws Exception {
+        final MetadataIndexTemplateService service = getMetadataIndexTemplateService();
+        ClusterState state = ClusterState.EMPTY_STATE;
+
+        var lifecycle = DataStreamLifecycle.newBuilder().dataRetention(randomMillisUpToYear9999()).build();
+        ComposableIndexTemplate it = ComposableIndexTemplate.builder()
+            .template(new Template(null, null, null, lifecycle, DataStreamOptions.newBuilder().setLifecycle(lifecycle).build()))
+            .indexPatterns(List.of("i*"))
+            .build();
+
+        final ClusterState finalState = state;
+        IllegalArgumentException e = expectThrows(
+            IllegalArgumentException.class,
+            () -> service.addIndexTemplateV2(finalState, randomBoolean(), "my-template", it)
+        );
+
+        assertThat(
+            e.getMessage(),
+            matchesRegex("only one lifecycle configuration may exist in a template. The preferred approach is inside data_stream_options")
         );
     }
 

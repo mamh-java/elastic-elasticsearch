@@ -52,6 +52,10 @@ public record DataStreamFailureStore(boolean enabled) implements SimpleDiffable<
         return SimpleDiffable.readDiffFrom(DataStreamFailureStore::read, in);
     }
 
+    public static Builder newBuilder(DataStreamFailureStore failureStore) {
+        return new Builder(failureStore.enabled);
+    }
+
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeBoolean(enabled);
@@ -72,5 +76,22 @@ public record DataStreamFailureStore(boolean enabled) implements SimpleDiffable<
 
     public static DataStreamFailureStore fromXContent(XContentParser parser) throws IOException {
         return PARSER.parse(parser, null);
+    }
+
+    public static class Builder {
+        private boolean enabled = true;
+
+        public Builder(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public Builder override(DataStreamFailureStore failureStore) {
+            enabled = failureStore.enabled;
+            return this;
+        }
+
+        public DataStreamFailureStore build() {
+            return new DataStreamFailureStore(enabled);
+        }
     }
 }

@@ -225,7 +225,7 @@ public class ComposableIndexTemplateTests extends SimpleDiffableSerializationTes
         }
         // We use the empty lifecycle so the global retention can be in effect
         DataStreamLifecycle lifecycle = new DataStreamLifecycle();
-        Template template = new Template(settings, mappings, aliases, lifecycle);
+        Template template = new Template(settings, mappings, aliases, null, DataStreamOptions.newBuilder().setLifecycle(lifecycle).build());
         ComposableIndexTemplate.builder()
             .indexPatterns(List.of(randomAlphaOfLength(4)))
             .template(template)

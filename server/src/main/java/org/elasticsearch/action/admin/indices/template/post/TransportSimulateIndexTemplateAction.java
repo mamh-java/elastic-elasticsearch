@@ -19,6 +19,7 @@ import org.elasticsearch.cluster.metadata.ComposableIndexTemplate;
 import org.elasticsearch.cluster.metadata.DataStreamGlobalRetention;
 import org.elasticsearch.cluster.metadata.DataStreamGlobalRetentionResolver;
 import org.elasticsearch.cluster.metadata.DataStreamLifecycle;
+import org.elasticsearch.cluster.metadata.DataStreamOptions;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.Metadata;
@@ -59,7 +60,7 @@ import static org.elasticsearch.cluster.metadata.DataStreamLifecycle.isDataStrea
 import static org.elasticsearch.cluster.metadata.MetadataIndexTemplateService.findConflictingV1Templates;
 import static org.elasticsearch.cluster.metadata.MetadataIndexTemplateService.findConflictingV2Templates;
 import static org.elasticsearch.cluster.metadata.MetadataIndexTemplateService.findV2Template;
-import static org.elasticsearch.cluster.metadata.MetadataIndexTemplateService.resolveLifecycle;
+import static org.elasticsearch.cluster.metadata.MetadataIndexTemplateService.resolveDataStreamOptions;
 import static org.elasticsearch.cluster.metadata.MetadataIndexTemplateService.resolveSettings;
 
 public class TransportSimulateIndexTemplateAction extends TransportMasterNodeReadAction<
@@ -315,10 +316,16 @@ public class TransportSimulateIndexTemplateAction extends TransportMasterNodeRea
         );
 
         Settings settings = Settings.builder().put(additionalSettings.build()).put(templateSettings).build();
-        DataStreamLifecycle lifecycle = resolveLifecycle(simulatedState.metadata(), matchingTemplate);
-        if (template.getDataStreamTemplate() != null && lifecycle == null && isDslOnlyMode) {
+        DataStreamOptions dataStreamOptions = resolveDataStreamOptions(template, simulatedState.metadata().componentTemplates());
+        DataStreamLifecycle lifecycle = dataStreamOptions == null ? null : dataStreamOptions.lifecycle();
+        // To avoid breaking BWC, we use the "old" way of configuring lifecycles here, because this template will eventually be returned
+        // to the user as XContent in the API response. Consequently, to avoid showing a duplicate lifecycle configuration in the response,
+        // we clear the lifecycle from the DataStreamOptions.
+        if (lifecycle != null) {
+            dataStreamOptions = DataStreamOptions.newBuilder(dataStreamOptions).setLifecycle(null).build();
+        } else if (template.getDataStreamTemplate() != null && isDslOnlyMode) {
             lifecycle = DataStreamLifecycle.DEFAULT;
         }
-        return new Template(settings, mergedMapping, aliasesByName, lifecycle);
+        return new Template(settings, mergedMapping, aliasesByName, lifecycle, dataStreamOptions);
     }
 }

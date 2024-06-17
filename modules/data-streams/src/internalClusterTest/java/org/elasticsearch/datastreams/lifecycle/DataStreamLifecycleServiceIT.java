@@ -38,7 +38,9 @@ import org.elasticsearch.cluster.coordination.StableMasterHealthIndicatorService
 import org.elasticsearch.cluster.metadata.ComposableIndexTemplate;
 import org.elasticsearch.cluster.metadata.DataStream;
 import org.elasticsearch.cluster.metadata.DataStreamAction;
+import org.elasticsearch.cluster.metadata.DataStreamFailureStore;
 import org.elasticsearch.cluster.metadata.DataStreamLifecycle;
+import org.elasticsearch.cluster.metadata.DataStreamOptions;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.metadata.Template;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -337,7 +339,7 @@ public class DataStreamLifecycleServiceIT extends ESIntegTestCase {
         request.indexTemplate(
             ComposableIndexTemplate.builder()
                 .indexPatterns(List.of("index_*"))
-                .template(new Template(null, CompressedXContent.fromJSON(mapping), null, null))
+                .template(new Template(null, CompressedXContent.fromJSON(mapping), null))
                 .build()
         );
         client().execute(TransportPutComposableIndexTemplateAction.TYPE, request).actionGet();
@@ -1134,12 +1136,18 @@ public class DataStreamLifecycleServiceIT extends ESIntegTestCase {
         boolean withFailureStore
     ) throws IOException {
         TransportPutComposableIndexTemplateAction.Request request = new TransportPutComposableIndexTemplateAction.Request(id);
+        DataStreamOptions dataStreamOptions = DataStreamOptions.newBuilder()
+            .setLifecycle(lifecycle)
+            .setFailureStore(new DataStreamFailureStore(withFailureStore))
+            .build();
         request.indexTemplate(
             ComposableIndexTemplate.builder()
                 .indexPatterns(patterns)
-                .template(new Template(settings, mappings == null ? null : CompressedXContent.fromJSON(mappings), null, lifecycle))
+                .template(
+                    new Template(settings, mappings == null ? null : CompressedXContent.fromJSON(mappings), null, null, dataStreamOptions)
+                )
                 .metadata(metadata)
-                .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate(false, false, withFailureStore))
+                .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
                 .build()
         );
         client().execute(TransportPutComposableIndexTemplateAction.TYPE, request).actionGet();
@@ -1186,8 +1194,13 @@ public class DataStreamLifecycleServiceIT extends ESIntegTestCase {
                                 Settings.EMPTY,
                                 null,
                                 null,
-                                DataStreamLifecycle.newBuilder()
-                                    .dataRetention(TimeValue.timeValueDays(SYSTEM_DATA_STREAM_RETENTION_DAYS))
+                                null,
+                                DataStreamOptions.newBuilder()
+                                    .setLifecycle(
+                                        DataStreamLifecycle.newBuilder()
+                                            .dataRetention(TimeValue.timeValueDays(SYSTEM_DATA_STREAM_RETENTION_DAYS))
+                                            .build()
+                                    )
                                     .build()
                             )
                         )

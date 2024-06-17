@@ -169,11 +169,13 @@ public class DataStreamLifecycleWithRetentionWarningsTests extends ESTestCase {
         ThreadContext threadContext = new ThreadContext(Settings.EMPTY);
         HeaderWarning.setThreadContext(threadContext);
         TimeValue defaultRetention = randomTimeValue(2, 100, TimeUnit.DAYS);
-        MetadataIndexTemplateService.validateLifecycle(
+        MetadataIndexTemplateService.validateDataStreamOptions(
             Metadata.builder().build(),
             randomAlphaOfLength(10),
             ComposableIndexTemplate.builder()
-                .template(new Template(null, null, null, DataStreamLifecycle.DEFAULT))
+                .template(
+                    new Template(null, null, null, null, DataStreamOptions.newBuilder().setLifecycle(DataStreamLifecycle.DEFAULT).build())
+                )
                 .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
                 .indexPatterns(List.of(randomAlphaOfLength(10)))
                 .build(),
@@ -241,7 +243,8 @@ public class DataStreamLifecycleWithRetentionWarningsTests extends ESTestCase {
             ComponentTemplateTests.randomSettings(),
             null,
             ComponentTemplateTests.randomAliases(),
-            DataStreamLifecycle.DEFAULT
+            null,
+            DataStreamOptions.newBuilder().setLifecycle(DataStreamLifecycle.DEFAULT).build()
         );
         ComponentTemplate componentTemplate = new ComponentTemplate(template, 1L, new HashMap<>());
         state = metadataIndexTemplateService.addComponentTemplate(state, false, "foo", componentTemplate);

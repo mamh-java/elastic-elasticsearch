@@ -444,7 +444,7 @@ public class ResolveClusterDataStreamIT extends AbstractMultiClustersTestCase {
         request.indexTemplate(
             ComposableIndexTemplate.builder()
                 .indexPatterns(patterns)
-                .template(new Template(null, null, aliases, null))
+                .template(new Template(null, null, aliases))
                 .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
                 .build()
         );

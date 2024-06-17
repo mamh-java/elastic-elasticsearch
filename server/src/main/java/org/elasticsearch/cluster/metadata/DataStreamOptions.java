@@ -8,6 +8,7 @@
 
 package org.elasticsearch.cluster.metadata;
 
+import org.elasticsearch.action.admin.indices.rollover.RolloverConfiguration;
 import org.elasticsearch.cluster.Diff;
 import org.elasticsearch.cluster.SimpleDiffable;
 import org.elasticsearch.common.Strings;
@@ -73,6 +74,14 @@ public record DataStreamOptions(@Nullable DataStreamLifecycle lifecycle, @Nullab
         return SimpleDiffable.readDiffFrom(DataStreamOptions::read, in);
     }
 
+    public static Builder newBuilder() {
+        return new Builder();
+    }
+
+    public static Builder newBuilder(DataStreamOptions dataStreamOptions) {
+        return new Builder(dataStreamOptions.lifecycle, dataStreamOptions.failureStore);
+    }
+
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeOptionalWriteable(lifecycle);
@@ -86,9 +95,15 @@ public record DataStreamOptions(@Nullable DataStreamLifecycle lifecycle, @Nullab
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+        return toXContent(builder, params, null);
+    }
+
+    public XContentBuilder toXContent(XContentBuilder builder, Params params, RolloverConfiguration rolloverConfiguration)
+        throws IOException {
         builder.startObject();
         if (lifecycle != null) {
-            builder.field(LIFECYCLE_FIELD.getPreferredName(), lifecycle);
+            builder.field(LIFECYCLE_FIELD.getPreferredName());
+            lifecycle.toXContent(builder, params, rolloverConfiguration, null);
         }
         if (failureStore != null) {
             builder.field(FAILURE_STORE_FIELD.getPreferredName(), failureStore);
@@ -99,5 +114,72 @@ public record DataStreamOptions(@Nullable DataStreamLifecycle lifecycle, @Nullab
 
     public static DataStreamOptions fromXContent(XContentParser parser) throws IOException {
         return PARSER.parse(parser, null);
+    }
+
+    public static class Builder {
+        @Nullable
+        private DataStreamLifecycle.Builder lifecycle;
+        @Nullable
+        private DataStreamFailureStore.Builder failureStore;
+
+        public Builder() {}
+
+        public Builder(DataStreamLifecycle lifecycle, DataStreamFailureStore failureStore) {
+            if (lifecycle != null) {
+                this.lifecycle = DataStreamLifecycle.newBuilder(lifecycle);
+            }
+            if (failureStore != null) {
+                this.failureStore = DataStreamFailureStore.newBuilder(failureStore);
+            }
+        }
+
+        public Builder override(DataStreamOptions dataStreamOptions) {
+            if (dataStreamOptions.lifecycle != null) {
+                if (lifecycle == null) {
+                    lifecycle = DataStreamLifecycle.newBuilder(dataStreamOptions.lifecycle);
+                } else {
+                    lifecycle.override(dataStreamOptions.lifecycle);
+                }
+            }
+            if (dataStreamOptions.failureStore != null) {
+                if (failureStore == null) {
+                    failureStore = DataStreamFailureStore.newBuilder(dataStreamOptions.failureStore);
+                } else {
+                    failureStore.override(dataStreamOptions.failureStore);
+                }
+            }
+            return this;
+        }
+
+        public Builder overrideLifecycle(DataStreamLifecycle lifecycle) {
+            if (this.lifecycle == null) {
+                this.lifecycle = DataStreamLifecycle.newBuilder(lifecycle);
+            } else {
+                this.lifecycle.override(lifecycle);
+            }
+            return this;
+        }
+
+        public Builder setLifecycle(DataStreamLifecycle lifecycle) {
+            if (lifecycle == null) {
+                this.lifecycle = null;
+            } else {
+                this.lifecycle = DataStreamLifecycle.newBuilder(lifecycle);
+            }
+            return this;
+        }
+
+        public Builder setFailureStore(DataStreamFailureStore failureStore) {
+            if (failureStore == null) {
+                this.failureStore = null;
+            } else {
+                this.failureStore = DataStreamFailureStore.newBuilder(failureStore);
+            }
+            return this;
+        }
+
+        public DataStreamOptions build() {
+            return new DataStreamOptions(lifecycle == null ? null : lifecycle.build(), failureStore == null ? null : failureStore.build());
+        }
     }
 }

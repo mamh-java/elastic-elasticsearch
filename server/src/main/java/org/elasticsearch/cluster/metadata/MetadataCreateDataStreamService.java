@@ -271,10 +271,18 @@ public class MetadataCreateDataStreamService {
         // when rolling over in the future.
         final long initialGeneration = 1;
 
+        // Resolve data stream options.
+        final DataStreamOptions dataStreamOptions = isSystem
+            ? MetadataIndexTemplateService.resolveDataStreamOptions(template, systemDataStreamDescriptor.getComponentTemplates())
+            : MetadataIndexTemplateService.resolveDataStreamOptions(template, metadata.componentTemplates());
+
         // If we need to create a failure store, do so first. Do not reroute during the creation since we will do
         // that as part of creating the backing index if required.
         IndexMetadata failureStoreIndex = null;
-        if (template.getDataStreamTemplate().hasFailureStore()) {
+        final boolean failureStoreEnabled = dataStreamOptions != null
+            && dataStreamOptions.failureStore() != null
+            && dataStreamOptions.failureStore().enabled();
+        if (failureStoreEnabled) {
             if (isSystem) {
                 throw new IllegalArgumentException("Failure stores are not supported on system data streams");
             }
@@ -312,7 +320,7 @@ public class MetadataCreateDataStreamService {
         }
         assert writeIndex != null;
         assert writeIndex.mapping() != null : "no mapping found for backing index [" + writeIndex.getIndex().getName() + "]";
-        assert template.getDataStreamTemplate().hasFailureStore() == false || failureStoreIndex != null;
+        assert failureStoreEnabled == false || failureStoreIndex != null;
         assert failureStoreIndex == null || failureStoreIndex.mapping() != null
             : "no mapping found for failure store [" + failureStoreIndex.getIndex().getName() + "]";
 
@@ -322,9 +330,12 @@ public class MetadataCreateDataStreamService {
         dsBackingIndices.add(writeIndex.getIndex());
         boolean hidden = isSystem || template.getDataStreamTemplate().isHidden();
         final IndexMode indexMode = metadata.isTimeSeriesTemplate(template) ? IndexMode.TIME_SERIES : null;
-        final DataStreamLifecycle lifecycle = isSystem
-            ? MetadataIndexTemplateService.resolveLifecycle(template, systemDataStreamDescriptor.getComponentTemplates())
-            : MetadataIndexTemplateService.resolveLifecycle(template, metadata.componentTemplates());
+        DataStreamLifecycle lifecycle = dataStreamOptions == null || dataStreamOptions.lifecycle() == null
+            ? null
+            : dataStreamOptions.lifecycle();
+        if (lifecycle == null && isDslOnlyMode) {
+            lifecycle = DataStreamLifecycle.DEFAULT;
+        }
         List<Index> failureIndices = failureStoreIndex == null ? List.of() : List.of(failureStoreIndex.getIndex());
         DataStream newDataStream = new DataStream(
             dataStreamName,
@@ -336,8 +347,8 @@ public class MetadataCreateDataStreamService {
             isSystem,
             template.getDataStreamTemplate().isAllowCustomRouting(),
             indexMode,
-            lifecycle == null && isDslOnlyMode ? DataStreamLifecycle.DEFAULT : lifecycle,
-            template.getDataStreamTemplate().hasFailureStore(),
+            lifecycle,
+            failureStoreEnabled,
             failureIndices,
             false,
             null

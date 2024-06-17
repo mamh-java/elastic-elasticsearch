@@ -40,6 +40,7 @@ import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.metadata.ComposableIndexTemplate;
 import org.elasticsearch.cluster.metadata.DataStream;
+import org.elasticsearch.cluster.metadata.DataStreamOptions;
 import org.elasticsearch.cluster.metadata.IndexAbstraction;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.Metadata;
@@ -827,8 +828,14 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
             // Check if this is a data stream template or if it is just a normal index.
             ComposableIndexTemplate composableIndexTemplate = metadata.templatesV2().get(template);
             if (composableIndexTemplate.getDataStreamTemplate() != null) {
-                // Check if the data stream has the failure store enabled
-                return Optional.of(composableIndexTemplate.getDataStreamTemplate().hasFailureStore());
+                DataStreamOptions dataStreamOptions = MetadataIndexTemplateService.resolveDataStreamOptions(
+                    composableIndexTemplate,
+                    metadata.componentTemplates()
+                );
+                boolean failureStoreEnabled = dataStreamOptions != null
+                    && dataStreamOptions.failureStore() != null
+                    && dataStreamOptions.failureStore().enabled();
+                return Optional.of(failureStoreEnabled);
             }
         }
 

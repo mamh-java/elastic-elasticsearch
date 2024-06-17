@@ -41,7 +41,7 @@ public class ComponentTemplateMetadataTests extends AbstractNamedWriteableTestCa
             templates.put(randomAlphaOfLength(4), newTemplate.getValue());
         } else {
             // Change the value
-            templates.put(newTemplate.getKey(), ComponentTemplateTests.mutateTemplate(newTemplate.getValue()));
+            templates.put(newTemplate.getKey(), ComponentTemplateTests.mutateComponentTemplate(newTemplate.getValue()));
         }
         return new ComponentTemplateMetadata(templates);
     }

@@ -39,13 +39,16 @@ public class FailureStoreQueryParamIT extends DisabledSecurityDataStreamTestCase
             {
               "index_patterns": ["failure-data-stream"],
               "template": {
+                "data_stream_options": {
+                  "failure_store": {
+                    "enabled": true
+                  }
+                },
                 "settings": {
                   "number_of_replicas": 0
                 }
               },
-              "data_stream": {
-                "failure_store": true
-              }
+              "data_stream": {}
             }
             """);
         assertOK(client().performRequest(putComposableIndexTemplateRequest));

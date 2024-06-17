@@ -471,11 +471,16 @@ public final class DataStreamTestHelper {
             "template_1",
             ComposableIndexTemplate.builder()
                 .indexPatterns(List.of("*"))
-                .dataStreamTemplate(
-                    new ComposableIndexTemplate.DataStreamTemplate(
-                        false,
-                        false,
-                        DataStream.isFailureStoreFeatureFlagEnabled() && storeFailures
+                .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
+                .template(
+                    new Template(
+                        null,
+                        null,
+                        null,
+                        null,
+                        DataStreamOptions.newBuilder()
+                            .setFailureStore(new DataStreamFailureStore(DataStream.isFailureStoreFeatureFlagEnabled() && storeFailures))
+                            .build()
                     )
                 )
                 .build()

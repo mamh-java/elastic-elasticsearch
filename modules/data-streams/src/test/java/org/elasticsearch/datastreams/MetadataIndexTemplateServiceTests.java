@@ -40,13 +40,11 @@ import java.util.List;
 import java.util.Set;
 
 import static org.elasticsearch.cluster.metadata.DataStreamTestHelper.generateTsdbMapping;
-import static org.elasticsearch.cluster.metadata.MetadataIndexTemplateService.composeDataLifecycles;
 import static org.elasticsearch.common.settings.Settings.builder;
 import static org.elasticsearch.datastreams.MetadataDataStreamRolloverServiceTests.createSettingsProvider;
 import static org.elasticsearch.indices.ShardLimitValidator.SETTING_CLUSTER_MAX_SHARDS_PER_NODE;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -134,59 +132,6 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
                 .build();
             var state = service.addIndexTemplateV2(ClusterState.EMPTY_STATE, false, "1", indexTemplate);
             assertThat(state.getMetadata().templatesV2().get("1"), equalTo(indexTemplate));
-        }
-    }
-
-    public void testLifecycleComposition() {
-        // No lifecycles result to null
-        {
-            List<DataStreamLifecycle> lifecycles = List.of();
-            assertThat(composeDataLifecycles(lifecycles), nullValue());
-        }
-        // One lifecycle results to this lifecycle as the final
-        {
-            DataStreamLifecycle lifecycle = DataStreamLifecycle.newBuilder()
-                .dataRetention(randomRetention())
-                .downsampling(randomDownsampling())
-                .build();
-            List<DataStreamLifecycle> lifecycles = List.of(lifecycle);
-            DataStreamLifecycle result = composeDataLifecycles(lifecycles);
-            // Defaults to true
-            assertThat(result.isEnabled(), equalTo(true));
-            assertThat(result.getDataStreamRetention(), equalTo(lifecycle.getDataStreamRetention()));
-            assertThat(result.getDownsamplingRounds(), equalTo(lifecycle.getDownsamplingRounds()));
-        }
-        // If the last lifecycle is missing a property (apart from enabled) we keep the latest from the previous ones
-        // Enabled is always true unless it's explicitly set to false
-        {
-            DataStreamLifecycle lifecycle = DataStreamLifecycle.newBuilder()
-                .enabled(false)
-                .dataRetention(randomNonEmptyRetention())
-                .downsampling(randomNonEmptyDownsampling())
-                .build();
-            List<DataStreamLifecycle> lifecycles = List.of(lifecycle, new DataStreamLifecycle());
-            DataStreamLifecycle result = composeDataLifecycles(lifecycles);
-            assertThat(result.isEnabled(), equalTo(true));
-            assertThat(result.getDataStreamRetention(), equalTo(lifecycle.getDataStreamRetention()));
-            assertThat(result.getDownsamplingRounds(), equalTo(lifecycle.getDownsamplingRounds()));
-        }
-        // If both lifecycle have all properties, then the latest one overwrites all the others
-        {
-            DataStreamLifecycle lifecycle1 = DataStreamLifecycle.newBuilder()
-                .enabled(false)
-                .dataRetention(randomNonEmptyRetention())
-                .downsampling(randomNonEmptyDownsampling())
-                .build();
-            DataStreamLifecycle lifecycle2 = DataStreamLifecycle.newBuilder()
-                .enabled(true)
-                .dataRetention(randomNonEmptyRetention())
-                .downsampling(randomNonEmptyDownsampling())
-                .build();
-            List<DataStreamLifecycle> lifecycles = List.of(lifecycle1, lifecycle2);
-            DataStreamLifecycle result = composeDataLifecycles(lifecycles);
-            assertThat(result.isEnabled(), equalTo(lifecycle2.isEnabled()));
-            assertThat(result.getDataStreamRetention(), equalTo(lifecycle2.getDataStreamRetention()));
-            assertThat(result.getDownsamplingRounds(), equalTo(lifecycle2.getDownsamplingRounds()));
         }
     }
 

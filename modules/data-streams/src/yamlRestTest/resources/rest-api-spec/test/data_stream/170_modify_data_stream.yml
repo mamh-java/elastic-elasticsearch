@@ -103,9 +103,11 @@
         name: my-template
         body:
           index_patterns: [data-*]
-          data_stream:
-            failure_store: true
-
+          data_stream: {}
+          template:
+            data_stream_options:
+              failure_store:
+                enabled: true
   - do:
       indices.create_data_stream:
         name: data-stream-for-modification

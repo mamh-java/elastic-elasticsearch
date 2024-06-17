@@ -14,6 +14,7 @@ import org.elasticsearch.cluster.metadata.ComponentTemplate;
 import org.elasticsearch.cluster.metadata.ComponentTemplateTests;
 import org.elasticsearch.cluster.metadata.DataStreamGlobalRetentionTests;
 import org.elasticsearch.cluster.metadata.DataStreamLifecycle;
+import org.elasticsearch.cluster.metadata.DataStreamOptions;
 import org.elasticsearch.cluster.metadata.Template;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.compress.CompressedXContent;
@@ -79,7 +80,7 @@ public class GetComponentTemplateResponseTests extends AbstractWireSerializingTe
         }
 
         var template = new ComponentTemplate(
-            new Template(settings, mappings, aliases, lifecycle),
+            new Template(settings, mappings, aliases, null, DataStreamOptions.newBuilder().setLifecycle(lifecycle).build()),
             randomBoolean() ? null : randomNonNegativeLong(),
             null,
             false

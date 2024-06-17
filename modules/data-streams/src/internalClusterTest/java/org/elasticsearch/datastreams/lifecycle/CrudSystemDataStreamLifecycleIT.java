@@ -24,6 +24,7 @@ import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.metadata.ComposableIndexTemplate;
 import org.elasticsearch.cluster.metadata.ComposableIndexTemplate.DataStreamTemplate;
 import org.elasticsearch.cluster.metadata.DataStreamLifecycle;
+import org.elasticsearch.cluster.metadata.DataStreamOptions;
 import org.elasticsearch.cluster.metadata.Template;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
@@ -204,7 +205,10 @@ public class CrudSystemDataStreamLifecycleIT extends ESIntegTestCase {
                                     Settings.EMPTY,
                                     mappings,
                                     null,
-                                    DataStreamLifecycle.newBuilder().dataRetention(randomMillisUpToYear9999()).build()
+                                    null,
+                                    DataStreamOptions.newBuilder()
+                                        .setLifecycle(DataStreamLifecycle.newBuilder().dataRetention(randomMillisUpToYear9999()).build())
+                                        .build()
                                 )
                             )
                             .dataStreamTemplate(new DataStreamTemplate())

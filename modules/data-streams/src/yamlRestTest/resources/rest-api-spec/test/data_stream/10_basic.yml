@@ -254,9 +254,11 @@ setup:
         name: my-template4
         body:
           index_patterns: [ failure-data-stream1, failure-data-stream2 ]
-          data_stream:
-            failure_store: true
+          data_stream: {}
           template:
+            data_stream_options:
+              failure_store:
+                enabled: true
             settings:
               index:
                 default_pipeline: "data_stream_pipeline"
@@ -615,9 +617,11 @@ setup:
         name: my-template4
         body:
           index_patterns: [ failure-data-stream1 ]
-          data_stream:
-            failure_store: true
-
+          data_stream: {}
+          template:
+            data_stream_options:
+              failure_store:
+                enabled: true
   - do:
       indices.create_data_stream:
         name: failure-data-stream1

@@ -23,9 +23,13 @@ public class DataStreamOptionsTests extends AbstractXContentSerializingTestCase<
 
     @Override
     protected DataStreamOptions createTestInstance() {
+        return randomDataStreamOptions(randomBoolean());
+    }
+
+    public static DataStreamOptions randomDataStreamOptions(boolean lifecycleAllowed) {
         return new DataStreamOptions(
-            randomBoolean() ? null : DataStreamLifecycleTests.randomLifecycle(),
-            randomBoolean() ? null : DataStreamFailureStoreTests.randomFailureStore()
+            lifecycleAllowed && randomBoolean() ? DataStreamLifecycleTests.randomLifecycle() : null,
+            randomBoolean() ? DataStreamFailureStoreTests.randomFailureStore() : null
         );
     }
 

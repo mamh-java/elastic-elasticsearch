@@ -314,7 +314,8 @@ public class MetadataIndexTemplateService {
             finalSettings,
             wrappedMappings,
             template.template().aliases(),
-            template.template().lifecycle()
+            template.template().lifecycle(),
+            template.template().dataStreamOptions()
         );
         final ComponentTemplate finalComponentTemplate = new ComponentTemplate(
             finalTemplate,
@@ -340,7 +341,7 @@ public class MetadataIndexTemplateService {
                 final String composableTemplateName = entry.getKey();
                 final ComposableIndexTemplate composableTemplate = entry.getValue();
                 try {
-                    validateLifecycle(
+                    validateDataStreamOptions(
                         tempStateWithComponentTemplateAdded.metadata(),
                         composableTemplateName,
                         composableTemplate,
@@ -367,10 +368,12 @@ public class MetadataIndexTemplateService {
             }
         }
 
-        if (finalComponentTemplate.template().lifecycle() != null) {
-            finalComponentTemplate.template()
-                .lifecycle()
-                .addWarningHeaderIfDataRetentionNotEffective(globalRetentionResolver.resolve(currentState));
+        var dataStreamOptions = finalComponentTemplate.template().dataStreamOptions();
+        var lifecycle = dataStreamOptions != null && dataStreamOptions.lifecycle() != null
+            ? dataStreamOptions.lifecycle()
+            : finalComponentTemplate.template().lifecycle();
+        if (lifecycle != null) {
+            lifecycle.addWarningHeaderIfDataRetentionNotEffective(globalRetentionResolver.resolve(currentState));
         }
 
         logger.info("{} component template [{}]", existing == null ? "adding" : "updating", name);
@@ -628,7 +631,13 @@ public class MetadataIndexTemplateService {
             // adjusted (to add _doc) and it should be validated
             CompressedXContent mappings = innerTemplate.mappings();
             CompressedXContent wrappedMappings = wrapMappingsIfNecessary(mappings, xContentRegistry);
-            final Template finalTemplate = new Template(finalSettings, wrappedMappings, innerTemplate.aliases(), innerTemplate.lifecycle());
+            final Template finalTemplate = new Template(
+                finalSettings,
+                wrappedMappings,
+                innerTemplate.aliases(),
+                innerTemplate.lifecycle(),
+                innerTemplate.dataStreamOptions()
+            );
             finalIndexTemplate = template.toBuilder().template(finalTemplate).build();
         }
 
@@ -722,14 +731,15 @@ public class MetadataIndexTemplateService {
                     finalSettings.build(),
                     finalTemplate.map(Template::mappings).orElse(null),
                     finalTemplate.map(Template::aliases).orElse(null),
-                    finalTemplate.map(Template::lifecycle).orElse(null)
+                    finalTemplate.map(Template::lifecycle).orElse(null),
+                    finalTemplate.map(Template::dataStreamOptions).orElse(null)
                 )
             )
             .build();
 
         validate(name, templateToValidate);
         validateDataStreamsStillReferenced(currentState, name, templateToValidate);
-        validateLifecycle(currentState.metadata(), name, templateToValidate, globalRetentionResolver.resolve(currentState));
+        validateDataStreamOptions(currentState.metadata(), name, templateToValidate, globalRetentionResolver.resolve(currentState));
 
         if (templateToValidate.isDeprecated() == false) {
             validateUseOfDeprecatedComponentTemplates(name, templateToValidate, currentState.metadata().componentTemplates());
@@ -799,24 +809,24 @@ public class MetadataIndexTemplateService {
     }
 
     // Visible for testing
-    static void validateLifecycle(
+    static void validateDataStreamOptions(
         Metadata metadata,
         String indexTemplateName,
         ComposableIndexTemplate template,
         @Nullable DataStreamGlobalRetention globalRetention
     ) {
-        DataStreamLifecycle lifecycle = template.template() != null && template.template().lifecycle() != null
-            ? template.template().lifecycle()
-            : resolveLifecycle(template, metadata.componentTemplates());
-        if (lifecycle != null) {
+        DataStreamOptions dataStreamOptions = resolveDataStreamOptions(template, metadata.componentTemplates());
+        if (dataStreamOptions != null) {
             if (template.getDataStreamTemplate() == null) {
                 throw new IllegalArgumentException(
                     "index template ["
                         + indexTemplateName
-                        + "] specifies lifecycle configuration that can only be used in combination with a data stream"
+                        + "] specifies data stream options, which can only be used in combination with a data stream"
                 );
             }
-            lifecycle.addWarningHeaderIfDataRetentionNotEffective(globalRetention);
+            if (dataStreamOptions.lifecycle() != null) {
+                dataStreamOptions.lifecycle().addWarningHeaderIfDataRetentionNotEffective(globalRetention);
+            }
         }
     }
 
@@ -1514,103 +1524,47 @@ public class MetadataIndexTemplateService {
         return Collections.unmodifiableList(aliases);
     }
 
-    /**
-     * Resolve the given v2 template into a {@link DataStreamLifecycle} object
-     */
     @Nullable
-    public static DataStreamLifecycle resolveLifecycle(final Metadata metadata, final String templateName) {
-        final ComposableIndexTemplate template = metadata.templatesV2().get(templateName);
-        assert template != null
-            : "attempted to resolve settings for a template [" + templateName + "] that did not exist in the cluster state";
-        if (template == null) {
-            return null;
-        }
-        return resolveLifecycle(template, metadata.componentTemplates());
-    }
-
-    /**
-     * Resolve the provided v2 template and component templates into a {@link DataStreamLifecycle} object
-     */
-    @Nullable
-    public static DataStreamLifecycle resolveLifecycle(
+    public static DataStreamOptions resolveDataStreamOptions(
         ComposableIndexTemplate template,
         Map<String, ComponentTemplate> componentTemplates
     ) {
-        Objects.requireNonNull(template, "attempted to resolve lifecycle for a null template");
-        Objects.requireNonNull(componentTemplates, "attempted to resolve lifecycle with null component templates");
-
-        List<DataStreamLifecycle> lifecycles = new ArrayList<>();
+        DataStreamOptions.Builder builder = null;
         for (String componentTemplateName : template.composedOf()) {
             if (componentTemplates.containsKey(componentTemplateName) == false) {
                 continue;
             }
-            DataStreamLifecycle lifecycle = componentTemplates.get(componentTemplateName).template().lifecycle();
-            if (lifecycle != null) {
-                lifecycles.add(lifecycle);
+            final Template componentTemplate = componentTemplates.get(componentTemplateName).template();
+            if (componentTemplate != null) {
+                builder = innerResolveDataStreamOptions(builder, componentTemplate);
             }
         }
-        // The actual index template's lifecycle has the highest precedence.
-        if (template.template() != null && template.template().lifecycle() != null) {
-            lifecycles.add(template.template().lifecycle());
-        }
-        return composeDataLifecycles(lifecycles);
-    }
-
-    /**
-     * This method composes a series of lifecycles to a final one. The lifecycles are getting composed one level deep,
-     * meaning that the keys present on the latest lifecycle will override the ones of the others. If a key is missing
-     * then it keeps the value of the previous lifecycles. For example, if we have the following two lifecycles:
-     * [
-     *   {
-     *     "lifecycle": {
-     *       "enabled": true,
-     *       "data_retention" : "10d"
-     *     }
-     *   },
-     *   {
-     *     "lifecycle": {
-     *       "enabled": true,
-     *       "data_retention" : "20d"
-     *     }
-     *   }
-     * ]
-     * The result will be { "lifecycle": { "enabled": true, "data_retention" : "20d"}} because the second data retention overrides the
-     * first. However, if we have the following two lifecycles:
-     * [
-     *   {
-     *     "lifecycle": {
-     *       "enabled": false,
-     *       "data_retention" : "10d"
-     *     }
-     *   },
-     *   {
-     *   "lifecycle": {
-     *      "enabled": true
-     *   }
-     *   }
-     * ]
-     * The result will be { "lifecycle": { "enabled": true, "data_retention" : "10d"} } because the latest lifecycle does not have any
-     * information on retention.
-     * @param lifecycles a sorted list of lifecycles in the order that they will be composed
-     * @return the final lifecycle
-     */
-    @Nullable
-    public static DataStreamLifecycle composeDataLifecycles(List<DataStreamLifecycle> lifecycles) {
-        DataStreamLifecycle.Builder builder = null;
-        for (DataStreamLifecycle current : lifecycles) {
-            if (builder == null) {
-                builder = DataStreamLifecycle.newBuilder(current);
-            } else {
-                builder.enabled(current.isEnabled());
-                if (current.getDataRetention() != null) {
-                    builder.dataRetention(current.getDataRetention());
-                }
-                if (current.getDownsampling() != null) {
-                    builder.downsampling(current.getDownsampling());
-                }
-            }
+        if (template.template() != null) {
+            builder = innerResolveDataStreamOptions(builder, template.template());
         }
         return builder == null ? null : builder.build();
+    }
+
+    private static DataStreamOptions.Builder innerResolveDataStreamOptions(DataStreamOptions.Builder builder, Template template) {
+        // For BWC reasons, we support configuring the DataStreamLifecycle in both the Template directly (old way), and in the
+        // DataStreamOptions (preferred way), bot not both at the same time.
+        if (template.lifecycle() != null) {
+            if (builder == null) {
+                builder = new DataStreamOptions.Builder().setLifecycle(template.lifecycle());
+            } else {
+                builder.overrideLifecycle(template.lifecycle());
+            }
+            // We continue resolution because the component template might specify other (non-lifecycle) parts of DataStreamOptions.
+        }
+        final DataStreamOptions dataStreamOptions = template.dataStreamOptions();
+        if (dataStreamOptions != null) {
+            if (builder == null) {
+                builder = DataStreamOptions.newBuilder(dataStreamOptions);
+            } else {
+                builder.override(dataStreamOptions);
+            }
+        }
+        return builder;
     }
 
     /**
@@ -1758,6 +1712,7 @@ public class MetadataIndexTemplateService {
             indexPatterns,
             maybeTemplate.map(Template::aliases).orElse(emptyMap()).values().stream().map(MetadataIndexTemplateService::toAlias).toList()
         );
+        validateLifecycle(template);
     }
 
     private static Alias toAlias(AliasMetadata aliasMeta) {
@@ -1853,6 +1808,17 @@ public class MetadataIndexTemplateService {
                     "alias [" + alias.name() + "] cannot be the same as any pattern in [" + String.join(", ", indexPatterns) + "]"
                 );
             }
+        }
+    }
+
+    private void validateLifecycle(Template template) {
+        if (template != null
+            && template.lifecycle() != null
+            && template.dataStreamOptions() != null
+            && template.dataStreamOptions().lifecycle() != null) {
+            throw new IllegalArgumentException(
+                "only one lifecycle configuration may exist in a template. The preferred approach is inside data_stream_options"
+            );
         }
     }
 

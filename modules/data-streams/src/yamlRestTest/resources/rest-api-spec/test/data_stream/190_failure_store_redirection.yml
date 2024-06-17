@@ -71,9 +71,11 @@ teardown:
         name: generic_logs_template
         body:
           index_patterns: logs-*
-          data_stream:
-            failure_store: true
+          data_stream: {}
           template:
+            data_stream_options:
+              failure_store:
+                enabled: true
             settings:
               number_of_shards:   1
               number_of_replicas: 1
@@ -150,9 +152,11 @@ teardown:
         name: generic_logs_template
         body:
           index_patterns: logs-*
-          data_stream:
-            failure_store: true
+          data_stream: {}
           template:
+            data_stream_options:
+              failure_store:
+                enabled: true
             settings:
               number_of_shards:   1
               number_of_replicas: 1

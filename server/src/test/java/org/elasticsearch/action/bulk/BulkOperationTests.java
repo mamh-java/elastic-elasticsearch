@@ -30,6 +30,8 @@ import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.coordination.NoMasterBlockService;
 import org.elasticsearch.cluster.metadata.ComposableIndexTemplate;
 import org.elasticsearch.cluster.metadata.DataStream;
+import org.elasticsearch.cluster.metadata.DataStreamFailureStore;
+import org.elasticsearch.cluster.metadata.DataStreamOptions;
 import org.elasticsearch.cluster.metadata.DataStreamTestHelper;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
@@ -146,14 +148,22 @@ public class BulkOperationTests extends ESTestCase {
                         "ds-template",
                         ComposableIndexTemplate.builder()
                             .indexPatterns(List.of(dataStreamName))
-                            .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate(false, false, false))
-                            .template(new Template(null, null, null, null))
+                            .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
+                            .template(new Template(null, null, null))
                             .build(),
                         "ds-template-with-failure-store",
                         ComposableIndexTemplate.builder()
                             .indexPatterns(List.of(fsDataStreamName, fsRolloverDataStreamName))
-                            .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate(false, false, true))
-                            .template(new Template(null, null, null, null))
+                            .dataStreamTemplate(new ComposableIndexTemplate.DataStreamTemplate())
+                            .template(
+                                new Template(
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    DataStreamOptions.newBuilder().setFailureStore(new DataStreamFailureStore(true)).build()
+                                )
+                            )
                             .build()
                     )
                 )

@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.Map;
 
+import static org.elasticsearch.cluster.metadata.DataStreamOptionsTests.randomDataStreamOptions;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
@@ -80,7 +81,7 @@ public class ComponentTemplateTests extends SimpleDiffableSerializationTestCase<
         Settings settings = null;
         CompressedXContent mappings = null;
         Map<String, AliasMetadata> aliases = null;
-        DataStreamLifecycle lifecycle = null;
+        DataStreamOptions dataStreamOptions = null;
         if (randomBoolean()) {
             settings = randomSettings();
         }
@@ -91,9 +92,9 @@ public class ComponentTemplateTests extends SimpleDiffableSerializationTestCase<
             aliases = randomAliases();
         }
         if (randomBoolean() && lifecycleAllowed) {
-            lifecycle = DataStreamLifecycleTests.randomLifecycle();
+            dataStreamOptions = DataStreamOptions.newBuilder().setLifecycle(DataStreamLifecycleTests.randomLifecycle()).build();
         }
-        Template template = new Template(settings, mappings, aliases, lifecycle);
+        Template template = new Template(settings, mappings, aliases, null, dataStreamOptions);
 
         Map<String, Object> meta = null;
         if (randomBoolean()) {
@@ -143,81 +144,38 @@ public class ComponentTemplateTests extends SimpleDiffableSerializationTestCase<
 
     @Override
     protected ComponentTemplate mutateInstance(ComponentTemplate orig) {
-        return mutateTemplate(orig);
+        return mutateComponentTemplate(orig);
     }
 
-    public static ComponentTemplate mutateTemplate(ComponentTemplate orig) {
-        return switch (randomIntBetween(0, 3)) {
-            case 0 -> {
-                Template ot = orig.template();
-                yield switch (randomIntBetween(0, 3)) {
-                    case 0 -> new ComponentTemplate(
-                        new Template(
-                            randomValueOtherThan(ot.settings(), ComponentTemplateTests::randomSettings),
-                            ot.mappings(),
-                            ot.aliases(),
-                            ot.lifecycle()
-                        ),
-                        orig.version(),
-                        orig.metadata(),
-                        orig.deprecated()
-                    );
-                    case 1 -> new ComponentTemplate(
-                        new Template(
-                            ot.settings(),
-                            randomValueOtherThan(ot.mappings(), ComponentTemplateTests::randomMappings),
-                            ot.aliases(),
-                            ot.lifecycle()
-                        ),
-                        orig.version(),
-                        orig.metadata(),
-                        orig.deprecated()
-                    );
-                    case 2 -> new ComponentTemplate(
-                        new Template(
-                            ot.settings(),
-                            ot.mappings(),
-                            randomValueOtherThan(ot.aliases(), ComponentTemplateTests::randomAliases),
-                            ot.lifecycle()
-                        ),
-                        orig.version(),
-                        orig.metadata(),
-                        orig.deprecated()
-                    );
-                    case 3 -> new ComponentTemplate(
-                        new Template(
-                            ot.settings(),
-                            ot.mappings(),
-                            ot.aliases(),
-                            randomValueOtherThan(ot.lifecycle(), DataStreamLifecycleTests::randomLifecycle)
-                        ),
-                        orig.version(),
-                        orig.metadata(),
-                        orig.deprecated()
-                    );
-                    default -> throw new IllegalStateException("illegal randomization branch");
-                };
-            }
-            case 1 -> new ComponentTemplate(
-                orig.template(),
-                randomValueOtherThan(orig.version(), ESTestCase::randomNonNegativeLong),
-                orig.metadata(),
-                orig.deprecated()
-            );
-            case 2 -> new ComponentTemplate(
-                orig.template(),
-                orig.version(),
-                randomValueOtherThan(orig.metadata(), ComponentTemplateTests::randomMeta),
-                orig.deprecated()
-            );
-            case 3 -> new ComponentTemplate(
-                orig.template(),
-                orig.version(),
-                orig.metadata(),
-                orig.isDeprecated() ? randomFrom(false, null) : true
-            );
-            default -> throw new IllegalStateException("illegal randomization branch");
-        };
+    public static ComponentTemplate mutateComponentTemplate(ComponentTemplate orig) {
+        var template = orig.template();
+        var version = orig.version();
+        var metadata = orig.metadata();
+        var deprecated = orig.deprecated();
+        switch (randomInt(3)) {
+            case 0 -> template = mutateTemplate(template);
+            case 1 -> version = randomValueOtherThan(version, ESTestCase::randomNonNegativeLong);
+            case 2 -> metadata = randomValueOtherThan(metadata, ComponentTemplateTests::randomMeta);
+            case 3 -> deprecated = orig.isDeprecated() ? randomFrom(false, null) : true;
+        }
+        ;
+        return new ComponentTemplate(template, version, metadata, deprecated);
+    }
+
+    public static Template mutateTemplate(Template template) {
+        var settings = template.settings();
+        var mappings = template.mappings();
+        var aliases = template.aliases();
+        var lifecycle = template.lifecycle();
+        var dataStreamOptions = template.dataStreamOptions();
+        switch (randomInt(4)) {
+            case 0 -> settings = randomValueOtherThan(settings, ComponentTemplateTests::randomSettings);
+            case 1 -> mappings = randomValueOtherThan(mappings, ComponentTemplateTests::randomMappings);
+            case 2 -> aliases = randomValueOtherThan(aliases, ComponentTemplateTests::randomAliases);
+            case 3 -> lifecycle = randomValueOtherThan(lifecycle, DataStreamLifecycleTests::randomLifecycle);
+            case 4 -> dataStreamOptions = randomValueOtherThan(dataStreamOptions, () -> randomDataStreamOptions(false));
+        }
+        return new Template(settings, mappings, aliases, lifecycle, dataStreamOptions);
     }
 
     public void testMappingsEquals() throws IOException {
@@ -281,7 +239,7 @@ public class ComponentTemplateTests extends SimpleDiffableSerializationTestCase<
         }
         DataStreamLifecycle lifecycle = new DataStreamLifecycle();
         ComponentTemplate template = new ComponentTemplate(
-            new Template(settings, mappings, aliases, lifecycle),
+            new Template(settings, mappings, aliases, null, DataStreamOptions.newBuilder().setLifecycle(lifecycle).build()),
             randomNonNegativeLong(),
             null
         );

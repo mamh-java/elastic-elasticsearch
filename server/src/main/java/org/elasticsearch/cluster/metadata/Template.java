@@ -46,12 +46,19 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
     private static final ParseField MAPPINGS = new ParseField("mappings");
     private static final ParseField ALIASES = new ParseField("aliases");
     private static final ParseField LIFECYCLE = new ParseField("lifecycle");
+    private static final ParseField DATA_STREAM_OPTIONS = new ParseField("data_stream_options");
 
     @SuppressWarnings("unchecked")
     public static final ConstructingObjectParser<Template, Void> PARSER = new ConstructingObjectParser<>(
         "template",
         false,
-        a -> new Template((Settings) a[0], (CompressedXContent) a[1], (Map<String, AliasMetadata>) a[2], (DataStreamLifecycle) a[3])
+        a -> new Template(
+            (Settings) a[0],
+            (CompressedXContent) a[1],
+            (Map<String, AliasMetadata>) a[2],
+            (DataStreamLifecycle) a[3],
+            (DataStreamOptions) a[4]
+        )
     );
 
     static {
@@ -77,6 +84,11 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
             return aliasMap;
         }, ALIASES);
         PARSER.declareObject(ConstructingObjectParser.optionalConstructorArg(), (p, c) -> DataStreamLifecycle.fromXContent(p), LIFECYCLE);
+        PARSER.declareObject(
+            ConstructingObjectParser.optionalConstructorArg(),
+            (p, c) -> DataStreamOptions.fromXContent(p),
+            DATA_STREAM_OPTIONS
+        );
     }
 
     @Nullable
@@ -85,24 +97,27 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
     private final CompressedXContent mappings;
     @Nullable
     private final Map<String, AliasMetadata> aliases;
-
     @Nullable
     private final DataStreamLifecycle lifecycle;
+    @Nullable
+    private final DataStreamOptions dataStreamOptions;
 
     public Template(
         @Nullable Settings settings,
         @Nullable CompressedXContent mappings,
         @Nullable Map<String, AliasMetadata> aliases,
-        @Nullable DataStreamLifecycle lifecycle
+        @Nullable DataStreamLifecycle lifecycle,
+        @Nullable DataStreamOptions dataStreamOptions
     ) {
         this.settings = settings;
         this.mappings = mappings;
         this.aliases = aliases;
         this.lifecycle = lifecycle;
+        this.dataStreamOptions = dataStreamOptions;
     }
 
     public Template(@Nullable Settings settings, @Nullable CompressedXContent mappings, @Nullable Map<String, AliasMetadata> aliases) {
-        this(settings, mappings, aliases, null);
+        this(settings, mappings, aliases, null, null);
     }
 
     public Template(StreamInput in) throws IOException {
@@ -133,6 +148,11 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
         } else {
             this.lifecycle = null;
         }
+        if (in.getTransportVersion().onOrAfter(TransportVersions.ADDED_DATA_STREAM_OPTIONS)) {
+            this.dataStreamOptions = in.readOptionalWriteable(DataStreamOptions::read);
+        } else {
+            this.dataStreamOptions = null;
+        }
     }
 
     @Nullable
@@ -153,6 +173,11 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
     @Nullable
     public DataStreamLifecycle lifecycle() {
         return lifecycle;
+    }
+
+    @Nullable
+    public DataStreamOptions dataStreamOptions() {
+        return dataStreamOptions;
     }
 
     @Override
@@ -184,11 +209,14 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
                 out.writeOptionalWriteable(lifecycle);
             }
         }
+        if (out.getTransportVersion().onOrAfter(TransportVersions.ADDED_DATA_STREAM_OPTIONS)) {
+            out.writeOptionalWriteable(dataStreamOptions);
+        }
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(settings, mappings, aliases, lifecycle);
+        return Objects.hash(settings, mappings, aliases, lifecycle, dataStreamOptions);
     }
 
     @Override
@@ -203,7 +231,8 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
         return Objects.equals(settings, other.settings)
             && mappingsEquals(this.mappings, other.mappings)
             && Objects.equals(aliases, other.aliases)
-            && Objects.equals(lifecycle, other.lifecycle);
+            && Objects.equals(lifecycle, other.lifecycle)
+            && Objects.equals(dataStreamOptions, other.dataStreamOptions);
     }
 
     @Override
@@ -251,6 +280,10 @@ public class Template implements SimpleDiffable<Template>, ToXContentObject {
         if (this.lifecycle != null) {
             builder.field(LIFECYCLE.getPreferredName());
             lifecycle.toXContent(builder, params, rolloverConfiguration, null);
+        }
+        if (this.dataStreamOptions != null) {
+            builder.field(DATA_STREAM_OPTIONS.getPreferredName());
+            dataStreamOptions.toXContent(builder, params, rolloverConfiguration);
         }
         builder.endObject();
         return builder;

@@ -422,6 +422,17 @@ public class DataStreamLifecycle implements SimpleDiffable<DataStreamLifecycle>,
             return this;
         }
 
+        public Builder override(DataStreamLifecycle lifecycle) {
+            enabled = lifecycle.enabled;
+            if (lifecycle.dataRetention != null) {
+                dataRetention = lifecycle.dataRetention;
+            }
+            if (lifecycle.downsampling != null) {
+                downsampling = lifecycle.downsampling;
+            }
+            return this;
+        }
+
         public DataStreamLifecycle build() {
             return new DataStreamLifecycle(dataRetention, downsampling, enabled);
         }
