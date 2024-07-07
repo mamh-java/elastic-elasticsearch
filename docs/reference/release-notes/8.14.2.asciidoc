@@ -1,8 +1,6 @@
 [[release-notes-8.14.2]]
 == {es} version 8.14.2
 
-coming[8.14.2]
-
 Also see <<breaking-changes-8.14,Breaking changes in 8.14>>.
 
 [[bug-8.14.2]]
@@ -36,3 +34,5 @@ Ranking::
 Search::
 * Add hexstring support byte painless scorers {es-pull}109492[#109492]
 * Fix automatic tracking of collapse with `docvalue_fields` {es-pull}110103[#110103]
+
+
