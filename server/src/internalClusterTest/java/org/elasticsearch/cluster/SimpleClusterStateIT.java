@@ -356,7 +356,7 @@ public class SimpleClusterStateIT extends ESIntegTestCase {
 
     public void testPrivateCustomsAreExcluded() throws Exception {
         // ensure that the custom is injected into the cluster state
-        assertBusy(() -> assertTrue(clusterService().state().customs().containsKey("test")));
+        awaitClusterState(state -> state.customs().containsKey("test"));
         ClusterStateResponse clusterStateResponse = clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).setCustoms(true).get();
         assertFalse(clusterStateResponse.getState().customs().containsKey("test"));
     }
