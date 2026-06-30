@@ -214,10 +214,6 @@ public class MapContractOperator implements Operator {
         return "MapContractOperator[mapPosChannel=" + mapPosChannel + ", returningChannel=" + returningChannel + "]";
     }
 
-    // -------------------------------------------------------------------------
-    // Internal processing
-    // -------------------------------------------------------------------------
-
     private void processPage(Page page) {
         IntBlock mapPosBlock = page.getBlock(mapPosChannel);
         IntBlock mapPageIdBlock = page.getBlock(mapPageIdChannel);

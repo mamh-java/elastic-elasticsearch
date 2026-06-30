@@ -7,6 +7,7 @@
 
 package org.elasticsearch.compute.operator;
 
+import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.compute.data.Page;
 
 /**
@@ -50,7 +51,20 @@ public final class MapPageTracker extends DriverLocalChannel {
      * the size of any page by its embedded ID, even after the tracker has advanced
      * past that page.
      */
-    private final java.util.HashMap<Integer, Integer> pageSizes = new java.util.HashMap<>();
+    private final PageSizeWindow pageSizes;
+
+    /**
+     * Creates a new tracker.  Immediately charges {@code PageSizeWindow}'s shallow size
+     * to {@code breaker}.
+     */
+    public MapPageTracker(CircuitBreaker breaker) {
+        this.pageSizes = new PageSizeWindow(breaker);
+    }
+
+    @Override
+    public void close() {
+        pageSizes.close();
+    }
 
     /**
      * Called by {@link MapExpandOperator} at the start of each source page.
@@ -67,7 +81,7 @@ public final class MapPageTracker extends DriverLocalChannel {
         this.lastStartedPageSize = page.getPositionCount();
         this.active = true;
         this.pageGeneration++;
-        this.pageSizes.put((int) this.pageGeneration, page.getPositionCount());
+        pageSizes.put((int) this.pageGeneration, page.getPositionCount());
     }
 
     /**
@@ -131,11 +145,7 @@ public final class MapPageTracker extends DriverLocalChannel {
      * @throws IllegalArgumentException if no page with the given ID has been registered
      */
     public int lastStartedPageSize(int pageId) {
-        Integer size = pageSizes.get(pageId);
-        if (size == null) {
-            throw new IllegalArgumentException("unknown page id: " + pageId);
-        }
-        return size;
+        return pageSizes.getAndEvict(pageId);
     }
 
     /**

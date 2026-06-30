@@ -18,15 +18,5 @@ import org.elasticsearch.core.Releasable;
  *     operator constructors. Because both operators execute on the same thread (the Driver
  *     loop), no thread-safety machinery is required.
  * </p>
- * <p>
- *     The default {@link #close()} implementation is a no-op. Subclasses that hold
- *     releasable resources should override it.
- * </p>
  */
-public abstract class DriverLocalChannel implements Releasable {
-
-    @Override
-    public void close() {
-        // no-op by default; subclasses override when they hold resources
-    }
-}
+public abstract class DriverLocalChannel implements Releasable {}

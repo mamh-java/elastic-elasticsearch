@@ -35,10 +35,6 @@ import static org.hamcrest.Matchers.hasSize;
  */
 public class MapOperatorTests extends ComputeTestCase {
 
-    // -------------------------------------------------------------------------
-    // Test infrastructure
-    // -------------------------------------------------------------------------
-
     /**
      * Builds a {@link DriverContext} backed by the test's non-breaking {@link BlockFactory}.
      */
@@ -46,10 +42,6 @@ public class MapOperatorTests extends ComputeTestCase {
         BlockFactory factory = blockFactory();
         return new DriverContext(factory.bigArrays(), factory, null);
     }
-
-    // -------------------------------------------------------------------------
-    // Helper utilities
-    // -------------------------------------------------------------------------
 
     /**
      * Builds an MV int block for a single position with the given values.
@@ -266,10 +258,6 @@ public class MapOperatorTests extends ComputeTestCase {
         public void close() {}
     }
 
-    // -------------------------------------------------------------------------
-    // Test cases
-    // -------------------------------------------------------------------------
-
     /**
      * Two MV int columns {@code a=[1,2]}, {@code b=[10,20]}.
      * Combinator = {@code Cross(Leaf(a), Leaf(b))}.
@@ -293,7 +281,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a", "b" };
         int mapPosChannel = 4;
         int mapPageIdChannel = 5;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
 
@@ -318,7 +306,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock, bBlock);
 
         List<Page> output;
-        try (expand; eval; contract) {
+        try (tracker; expand; eval; contract) {
             output = runPipeline(expand, List.of(eval), contract, List.of(input));
         }
 
@@ -357,7 +345,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a", "b" };
         int mapPosChannel = 4;
         int mapPageIdChannel = 5;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
         EvalOperator eval = new EvalOperator(ctx, new SumTwoChannels(ctx, 2, 3));
@@ -377,7 +365,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock, bBlock);
 
         List<Page> output;
-        try (expand; eval; contract) {
+        try (tracker; expand; eval; contract) {
             output = runPipeline(expand, List.of(eval), contract, List.of(input));
         }
 
@@ -411,7 +399,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a", "b" };
         int mapPosChannel = 4;
         int mapPageIdChannel = 5;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
 
@@ -434,7 +422,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock, bBlock);
 
         List<Page> output;
-        try (expand; eval; contract) {
+        try (tracker; expand; eval; contract) {
             output = runPipeline(expand, List.of(eval), contract, List.of(input));
         }
 
@@ -475,7 +463,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a", "b" };
         int mapPosChannel = 4;
         int mapPageIdChannel = 5;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
 
@@ -519,7 +507,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock, bBlock);
 
         List<Page> output;
-        try (expand; filter; eval; contract) {
+        try (tracker; expand; filter; eval; contract) {
             output = runPipeline(expand, List.of(filter, eval), contract, List.of(input));
         }
 
@@ -570,7 +558,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a", "b", "c" };
         int mapPosChannel = 6;
         int mapPageIdChannel = 7;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
 
@@ -594,7 +582,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock, bBlock, cBlock);
 
         List<Page> output;
-        try (expand; eval; contract) {
+        try (tracker; expand; eval; contract) {
             output = runPipeline(expand, List.of(eval), contract, List.of(input));
         }
 
@@ -630,7 +618,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a", "b" };
         int mapPosChannel = 4;
         int mapPageIdChannel = 5;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
         EvalOperator eval = new EvalOperator(ctx, new SumTwoChannels(ctx, 2, 3));
@@ -650,7 +638,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock, bBlock);
 
         List<Page> output;
-        try (expand; eval; contract) {
+        try (tracker; expand; eval; contract) {
             output = runPipeline(expand, List.of(eval), contract, List.of(input));
         }
 
@@ -680,7 +668,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a" };
         int mapPosChannel = 2;
         int mapPageIdChannel = 3;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
 
@@ -715,7 +703,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock);
 
         List<Page> output;
-        try (expand; filter; eval; contract) {
+        try (tracker; expand; filter; eval; contract) {
             output = runPipeline(expand, List.of(filter, eval), contract, List.of(input));
         }
 
@@ -751,7 +739,7 @@ public class MapOperatorTests extends ComputeTestCase {
         String[] leafNames = { "a" };
         int mapPosChannel = 2;
         int mapPageIdChannel = 3;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, 100, ctx, tracker);
 
@@ -775,7 +763,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input2 = new Page(aBlock2);
 
         List<Page> output;
-        try (expand; eval; contract) {
+        try (tracker; expand; eval; contract) {
             output = runPipeline(expand, List.of(eval), contract, List.of(input1, input2));
         }
 
@@ -820,7 +808,7 @@ public class MapOperatorTests extends ComputeTestCase {
         // Set maxPageSize small (10) so the 1000-value expansion spans 100 output pages
         int maxPageSize = 10;
         int mapPageIdChannel = 3;
-        MapPageTracker tracker = new MapPageTracker();
+        MapPageTracker tracker = new MapPageTracker(ctx.blockFactory().breaker());
 
         MapExpandOperator expand = new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, maxPageSize, ctx, tracker);
 
@@ -850,7 +838,7 @@ public class MapOperatorTests extends ComputeTestCase {
         Page input = new Page(aBlock);
 
         List<Page> output;
-        try (expand; eval; contract) {
+        try (tracker; expand; eval; contract) {
             output = runPipeline(expand, List.of(eval), contract, List.of(input));
         }
 
@@ -870,10 +858,6 @@ public class MapOperatorTests extends ComputeTestCase {
             p.releaseBlocks();
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Additional edge case: leaves() traversal order for nested combinators
-    // -------------------------------------------------------------------------
 
     /**
      * Verifies that {@link MapCombinator#leaves()} returns leaves in left-to-right

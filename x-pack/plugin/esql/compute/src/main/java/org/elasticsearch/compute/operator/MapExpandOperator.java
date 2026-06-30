@@ -12,18 +12,16 @@ import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.core.Releasables;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 
 /**
  * Expands each document position into a set of combination rows according to a
  * {@link MapCombinator} tree.
  * <p>
  *     For each position {@code p} in the input page the operator evaluates the combinator
- *     tree to produce a "mini-table": a list of {@code int[]} rows where each entry is a
- *     raw value index into the corresponding leaf's flattened (expanded) block at position
- *     {@code p} (or {@code -1} for null).
+ *     tree to produce a "mini-table": an {@code int[numLeaves][rows]} buffer where each
+ *     entry is a raw value index into the corresponding leaf's flattened (expanded) block
+ *     at position {@code p} (or {@code -1} for null).
  * </p>
  * <p>Output channel layout per row:</p>
  * <ol>
@@ -31,11 +29,13 @@ import java.util.List;
  *     <li>One {@code _map_col_<name>} scalar channel per leaf — the actual scalar value
  *         for this combination row (or null if the value index is {@code -1}).</li>
  *     <li>{@code _map_pos} — the integer position {@code p}.</li>
+ *     <li>{@code _map_page_id} — monotonically increasing page counter for page-boundary
+ *         detection in {@link MapContractOperator}.</li>
  * </ol>
  * <p>
  *     Output pages are capped at {@code maxPageSize} rows; when a position expands into
  *     more rows than fit in the current output page the rows are emitted across multiple
- *     output pages.
+ *     output pages using a partial-position continuation.
  * </p>
  */
 public class MapExpandOperator implements Operator {
@@ -49,7 +49,7 @@ public class MapExpandOperator implements Operator {
     private final int numLeaves;
     /**
      * Monotonically increasing page counter.  Incremented for each source page and
-     * written into the {@code _map_pos+1} channel of every expanded row.  The
+     * written into the {@code _map_page_id} channel of every expanded row.  The
      * {@link MapContractOperator} reads this channel to detect source-page boundaries
      * reliably, even when rows from multiple source pages arrive at the contract after
      * the expand operator has already finished all pages.
@@ -65,22 +65,26 @@ public class MapExpandOperator implements Operator {
      */
     private int nextPosition;
     /**
-     * Pre-computed mini-table for the current position (may span multiple output pages).
-     * Each row is a {@code int[]} of length {@code numLeaves}; each entry is a raw value
-     * index into the corresponding leaf's expanded block, or {@code -1} for null.
+     * Full expansion for the position currently being drained across output pages.
+     * Dimensions: {@code [numLeaves][pendingRowCount]}.  {@code null} when no position
+     * is being drained.
      */
-    private List<int[]> pendingRows;
+    private int[][] pendingLeafValues;
     /**
-     * Index of the next row in {@link #pendingRows} to emit.
+     * Number of valid rows in {@link #pendingLeafValues}.
+     */
+    private int pendingRowCount;
+    /**
+     * Index of the next row in {@link #pendingLeafValues} to emit.
      */
     private int nextPendingRow;
     /**
-     * The position ({@code p}) that produced {@link #pendingRows}.
+     * The source position ({@code p}) that produced {@link #pendingLeafValues}.
      */
     private int pendingPosition;
     /**
      * Expanded (flattened) leaf blocks for the current input page.
-     * Built lazily and released when the page is released.
+     * Built once per page in {@link #addInput} and released in {@link #releaseCurrentPage}.
      */
     private Block[] expandedLeafBlocks;
 
@@ -90,8 +94,8 @@ public class MapExpandOperator implements Operator {
      * @param combinator    the combinator tree describing how to combine input channels
      * @param leafChannels  channel indices for each leaf, in tree traversal order matching
      *                      {@link MapCombinator#leaves()}
-     * @param leafNames     column names for each leaf (kept for symmetry with other factories;
-     *                      actual names are embedded in the combinator)
+     * @param leafNames     column names for each leaf (kept for API symmetry; actual names
+     *                      are embedded in the combinator)
      * @param mapPosChannel the output channel index where {@code _map_pos} will be written
      *                      (must equal {@code inputBlockCount + numLeaves})
      * @param maxPageSize   maximum number of rows per output page
@@ -127,13 +131,14 @@ public class MapExpandOperator implements Operator {
         assert inputPage == null : "already has an input page";
         inputPage = page;
         nextPosition = 0;
-        pendingRows = null;
+        pendingLeafValues = null;
+        pendingRowCount = 0;
         nextPendingRow = 0;
         pendingPosition = -1;
         tracker.onPageStart(page);
         pageCounter++;
         // Expand leaf blocks once per page so value indices map to positions in
-        // the flattened block (needed for null-block detection).
+        // the flattened block (needed for copyFrom in getOutput).
         expandedLeafBlocks = new Block[numLeaves];
         boolean success = false;
         try {
@@ -174,38 +179,48 @@ public class MapExpandOperator implements Operator {
         // total output channels = inputBlockCount + numLeaves (_map_col_*) + 1 (_map_pos) + 1 (_map_page_id)
         int outputBlockCount = inputBlockCount + numLeaves + 2;
 
-        // Accumulate up to maxPageSize rows
+        // Accumulate up to maxPageSize rows.
         int[] broadcastPositions = new int[maxPageSize];
         int[][] leafValueIndices = new int[numLeaves][maxPageSize];
         int[] mapPosValues = new int[maxPageSize];
         int rowsInBatch = 0;
 
         while (rowsInBatch < maxPageSize) {
-            // Drain pending rows from the current position first
-            if (pendingRows != null && nextPendingRow < pendingRows.size()) {
-                int[] row = pendingRows.get(nextPendingRow++);
+            // Drain pending rows from the current position first.
+            if (pendingLeafValues != null && nextPendingRow < pendingRowCount) {
                 broadcastPositions[rowsInBatch] = pendingPosition;
                 for (int l = 0; l < numLeaves; l++) {
-                    leafValueIndices[l][rowsInBatch] = row[l];
+                    leafValueIndices[l][rowsInBatch] = pendingLeafValues[l][nextPendingRow];
                 }
                 mapPosValues[rowsInBatch] = pendingPosition;
                 rowsInBatch++;
+                nextPendingRow++;
 
-                if (nextPendingRow == pendingRows.size()) {
-                    pendingRows = null;
+                if (nextPendingRow == pendingRowCount) {
+                    pendingLeafValues = null;
                 }
                 continue;
             }
 
-            // Move to the next position
+            // Move to the next position.
             if (nextPosition >= inputPage.getPositionCount()) {
                 break;
             }
 
             int p = nextPosition++;
-            pendingRows = evalCombinator(combinator, inputPage, p);
-            pendingPosition = p;
-            nextPendingRow = 0;
+            // Pre-expand this position into a dedicated scratch buffer so that a
+            // single position's expansion can span multiple output pages.
+            // Use a generously sized scratch buffer; positions with many values
+            // will expand into it fully before being drained row-by-row.
+            int maxExpansion = maxExpansionForPosition(p);
+            int[][] posBuffer = new int[numLeaves][maxExpansion];
+            int rowCount = combinator.expand(inputPage, p, posBuffer, 0, 0);
+            if (rowCount > 0) {
+                pendingLeafValues = posBuffer;
+                pendingRowCount = rowCount;
+                pendingPosition = p;
+                nextPendingRow = 0;
+            }
         }
 
         if (rowsInBatch == 0) {
@@ -219,12 +234,12 @@ public class MapExpandOperator implements Operator {
             int actualRows = rowsInBatch;
             int[] bcastSlice = actualRows < maxPageSize ? Arrays.copyOf(broadcastPositions, actualRows) : broadcastPositions;
 
-            // Broadcast original channels
+            // Broadcast original channels.
             for (int b = 0; b < inputBlockCount; b++) {
                 outputBlocks[b] = inputPage.getBlock(b).filter(true, bcastSlice);
             }
 
-            // Leaf (_map_col_*) channels: scalar blocks from expanded leaf blocks
+            // Leaf (_map_col_*) channels: scalar blocks from expanded leaf blocks.
             for (int l = 0; l < numLeaves; l++) {
                 Block.Builder builder = expandedLeafBlocks[l].elementType().newBlockBuilder(actualRows, blockFactory);
                 boolean builderSuccess = false;
@@ -248,11 +263,11 @@ public class MapExpandOperator implements Operator {
                 }
             }
 
-            // _map_pos channel
+            // _map_pos channel.
             int[] mapPosSlice = actualRows < maxPageSize ? Arrays.copyOf(mapPosValues, actualRows) : mapPosValues;
             outputBlocks[inputBlockCount + numLeaves] = blockFactory.newIntArrayVector(mapPosSlice, actualRows).asBlock();
 
-            // _map_page_id channel: constant value = pageCounter for all rows in this output page
+            // _map_page_id channel: constant value = pageCounter for all rows in this output page.
             outputBlocks[inputBlockCount + numLeaves + 1] = blockFactory.newConstantIntBlockWith(pageCounter, actualRows);
 
             success = true;
@@ -262,12 +277,30 @@ public class MapExpandOperator implements Operator {
             }
         }
 
-        // If all positions have been processed, clear the input page
-        if (nextPosition >= inputPage.getPositionCount() && pendingRows == null) {
+        // If all positions have been processed, release the input page.
+        if (nextPosition >= inputPage.getPositionCount() && pendingLeafValues == null) {
             releaseCurrentPage();
         }
 
         return new Page(outputBlocks);
+    }
+
+    /**
+     * Computes the maximum number of expanded rows that position {@code p} can produce.
+     * <p>
+     *     For a cross-product tree this is the product of value counts across all leaves;
+     *     for zip it is the maximum.  Rather than computing the exact bound (which would
+     *     require a full tree traversal), we conservatively use the product of all leaf
+     *     value counts, which is always an upper bound.
+     * </p>
+     */
+    private int maxExpansionForPosition(int p) {
+        int product = 1;
+        for (int leafChannel : leafChannels) {
+            int vc = Math.max(1, inputPage.getBlock(leafChannel).getValueCount(p));
+            product *= vc;
+        }
+        return product;
     }
 
     private void releaseCurrentPage() {
@@ -277,8 +310,6 @@ public class MapExpandOperator implements Operator {
             expandedLeafBlocks = null;
         }
         // Signal that all expanded rows for this source page have been emitted.
-        // MapContractOperator uses the resulting generation counter change to detect
-        // page boundaries even when _map_pos alone is ambiguous.
         tracker.onPageComplete();
         // Release the source page. All output has been emitted (broadcast blocks are
         // independent copies via filter()); the original blocks are no longer needed.
@@ -286,93 +317,6 @@ public class MapExpandOperator implements Operator {
             inputPage.releaseBlocks();
             inputPage = null;
         }
-    }
-
-    /**
-     * Evaluates the combinator tree at document position {@code p} and returns a list of
-     * rows. Each row is an {@code int[]} of length {@code numLeaves} where each entry is
-     * a raw value index into the corresponding expanded leaf block (or {@code -1} for null).
-     */
-    private List<int[]> evalCombinator(MapCombinator node, Page page, int p) {
-        if (node instanceof MapCombinator.Leaf leaf) {
-            return evalLeaf(leaf, page, p);
-        } else if (node instanceof MapCombinator.Cross cross) {
-            List<int[]> left = evalCombinator(cross.left(), page, p);
-            List<int[]> right = evalCombinator(cross.right(), page, p);
-            return cross(left, cross.left().leaves().size(), right, cross.right().leaves().size());
-        } else if (node instanceof MapCombinator.Zip zip) {
-            List<int[]> left = evalCombinator(zip.left(), page, p);
-            List<int[]> right = evalCombinator(zip.right(), page, p);
-            return zip(left, zip.left().leaves().size(), right, zip.right().leaves().size());
-        } else {
-            throw new IllegalStateException("unknown combinator node: " + node);
-        }
-    }
-
-    /**
-     * Produces one row per value at position {@code p} in the leaf's block.
-     * If the position is null, produces one row with value index {@code -1}.
-     * <p>
-     *     The returned value indices are positions in the <em>expanded</em> (flattened)
-     *     leaf block, which is stored in {@link #expandedLeafBlocks}.
-     * </p>
-     */
-    private static List<int[]> evalLeaf(MapCombinator.Leaf leaf, Page page, int p) {
-        Block block = page.getBlock(leaf.channel());
-        int valueCount = block.getValueCount(p);
-        if (valueCount == 0) {
-            // null position — emit one null row
-            List<int[]> result = new ArrayList<>(1);
-            result.add(new int[] { -1 });
-            return result;
-        }
-        int firstIdx = block.getFirstValueIndex(p);
-        List<int[]> result = new ArrayList<>(valueCount);
-        for (int i = 0; i < valueCount; i++) {
-            result.add(new int[] { firstIdx + i });
-        }
-        return result;
-    }
-
-    /**
-     * Cartesian product of left rows and right rows.
-     * Each output row is the concatenation of a left row and a right row.
-     */
-    private static List<int[]> cross(List<int[]> left, int leftLeaves, List<int[]> right, int rightLeaves) {
-        List<int[]> result = new ArrayList<>(left.size() * right.size());
-        for (int[] lRow : left) {
-            for (int[] rRow : right) {
-                int[] combined = new int[leftLeaves + rightLeaves];
-                System.arraycopy(lRow, 0, combined, 0, leftLeaves);
-                System.arraycopy(rRow, 0, combined, leftLeaves, rightLeaves);
-                result.add(combined);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Positional zip of left rows and right rows, null-padding the shorter to the longer length.
-     */
-    private static List<int[]> zip(List<int[]> left, int leftLeaves, List<int[]> right, int rightLeaves) {
-        int len = Math.max(left.size(), right.size());
-        List<int[]> result = new ArrayList<>(len);
-        for (int i = 0; i < len; i++) {
-            int[] lRow = i < left.size() ? left.get(i) : nullRow(leftLeaves);
-            int[] rRow = i < right.size() ? right.get(i) : nullRow(rightLeaves);
-            int[] combined = new int[leftLeaves + rightLeaves];
-            System.arraycopy(lRow, 0, combined, 0, leftLeaves);
-            System.arraycopy(rRow, 0, combined, leftLeaves, rightLeaves);
-            result.add(combined);
-        }
-        return result;
-    }
-
-    /** Creates a row of {@code len} null entries (all {@code -1}). */
-    private static int[] nullRow(int len) {
-        int[] row = new int[len];
-        Arrays.fill(row, -1);
-        return row;
     }
 
     @Override
