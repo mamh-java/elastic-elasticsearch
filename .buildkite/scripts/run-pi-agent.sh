@@ -87,7 +87,8 @@ NONO_ARGS=(
   --allow-cwd                # required in non-interactive mode (--startup-timeout 0) even when profile has workdir.access=readwrite
   --allow "${SESSION_DIR}"   # runtime path for JSONL session snapshots; not known at profile-authoring time
   --startup-timeout 0        # non-interactive — skip TUI-readiness check
-  --silent                   # suppress nono banner/summary in CI logs
+  -v                         # DIAGNOSTIC: verbose output so we can see sandbox status, profile load, and denial details
+  # --silent removed for diagnostic build — restore once root cause is identified
 )
 
 PI_EXIT=0
