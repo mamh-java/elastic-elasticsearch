@@ -176,6 +176,8 @@ import org.elasticsearch.xpack.esql.plan.physical.LimitExec;
 import org.elasticsearch.xpack.esql.plan.physical.LocalSourceExec;
 import org.elasticsearch.xpack.esql.plan.physical.LookupJoinExec;
 import org.elasticsearch.xpack.esql.plan.physical.MMRExec;
+import org.elasticsearch.xpack.esql.plan.physical.MapContractExec;
+import org.elasticsearch.xpack.esql.plan.physical.MapExpandExec;
 import org.elasticsearch.xpack.esql.plan.physical.MetricsInfoExec;
 import org.elasticsearch.xpack.esql.plan.physical.MvExpandExec;
 import org.elasticsearch.xpack.esql.plan.physical.OutputExec;
@@ -382,6 +384,10 @@ public class LocalExecutionPlanner {
             return planLimit(limit, context);
         } else if (node instanceof MvExpandExec mvExpand) {
             return planMvExpand(mvExpand, context);
+        } else if (node instanceof MapExpandExec mapExpand) {
+            return planMapExpand(mapExpand, context);
+        } else if (node instanceof MapContractExec mapContract) {
+            return planMapContract(mapContract, context);
         } else if (node instanceof TimeSeriesCollapseExec tsCollapse) {
             return planTimeSeriesCollapse(tsCollapse, context);
         } else if (node instanceof HighlightExec highlight) {
@@ -2010,6 +2016,26 @@ public class LocalExecutionPlanner {
             new MvExpandOperator.Factory(source.layout.get(mvExpandExec.target().id()).channel(), blockSize),
             layout.build()
         );
+    }
+
+    /**
+     * Stub planner for the MAP expand phase.
+     * <p>
+     *     Wiring the {@link org.elasticsearch.compute.operator.MapExpandOperator.Factory} requires a
+     *     {@link org.elasticsearch.compute.operator.MapPageTracker} shared with the matching contract
+     *     operator in the same {@link org.elasticsearch.compute.operator.Driver}. That shared-state plumbing
+     *     is not modelled on the physical plan yet, so execution of a MAP command is not supported.
+     * </p>
+     */
+    private PhysicalOperation planMapExpand(MapExpandExec mapExpand, LocalExecutionPlannerContext context) {
+        throw new UnsupportedOperationException("MAP command execution is not implemented yet [" + mapExpand + "]");
+    }
+
+    /**
+     * Stub planner for the MAP contract phase. See {@link #planMapExpand} for why this is not implemented yet.
+     */
+    private PhysicalOperation planMapContract(MapContractExec mapContract, LocalExecutionPlannerContext context) {
+        throw new UnsupportedOperationException("MAP command execution is not implemented yet [" + mapContract + "]");
     }
 
     private PhysicalOperation planTimeSeriesCollapse(TimeSeriesCollapseExec collapse, LocalExecutionPlannerContext context) {

@@ -521,6 +521,36 @@ public interface EsqlBaseParserVisitor<T> extends ParseTreeVisitor<T> {
    */
   T visitHighlightCommand(EsqlBaseParser.HighlightCommandContext ctx);
   /**
+   * Visit a parse tree produced by {@link EsqlBaseParser#mapCommand}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitMapCommand(EsqlBaseParser.MapCommandContext ctx);
+  /**
+   * Visit a parse tree produced by {@link EsqlBaseParser#mapCombinator}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitMapCombinator(EsqlBaseParser.MapCombinatorContext ctx);
+  /**
+   * Visit a parse tree produced by {@link EsqlBaseParser#mapCombinatorCross}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitMapCombinatorCross(EsqlBaseParser.MapCombinatorCrossContext ctx);
+  /**
+   * Visit a parse tree produced by {@link EsqlBaseParser#mapCombinatorAtom}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitMapCombinatorAtom(EsqlBaseParser.MapCombinatorAtomContext ctx);
+  /**
+   * Visit a parse tree produced by {@link EsqlBaseParser#mapSubPipeline}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitMapSubPipeline(EsqlBaseParser.MapSubPipelineContext ctx);
+  /**
    * Visit a parse tree produced by {@link EsqlBaseParser#qualifiedNames}.
    * @param ctx the parse tree
    * @return the visitor result

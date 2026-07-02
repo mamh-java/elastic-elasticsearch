@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.analysis;
 
 import org.elasticsearch.TransportVersion;
+import org.elasticsearch.compute.operator.MapCombinator;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.index.mapper.flattened.FlattenedFieldMapper;
@@ -59,6 +60,8 @@ import org.elasticsearch.xpack.esql.plan.logical.Limit;
 import org.elasticsearch.xpack.esql.plan.logical.LimitBy;
 import org.elasticsearch.xpack.esql.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.esql.plan.logical.Lookup;
+import org.elasticsearch.xpack.esql.plan.logical.MapCommand;
+import org.elasticsearch.xpack.esql.plan.logical.PipelineBreaker;
 import org.elasticsearch.xpack.esql.plan.logical.Project;
 import org.elasticsearch.xpack.esql.plan.logical.Subquery;
 import org.elasticsearch.xpack.esql.plan.logical.TimeSeriesAggregate;
@@ -175,6 +178,7 @@ public class Verifier {
             checkInsist(p, failures);
             checkLimitBeforeInlineStats(p, failures);
             checkTimeSeriesWithoutOnlyInTimeSeriesAggregate(p, failures);
+            checkMapCommand(p, failures);
         });
 
         if (failures.hasFailures() == false) {
@@ -430,6 +434,57 @@ public class Verifier {
                 if (Alias.unwrap(g) instanceof TimeSeriesWithout) {
                     failures.add(fail(g, "WITHOUT is only supported in time-series queries (i.e. TS | ...) at the moment"));
                 }
+            }
+        }
+    }
+
+    /**
+     * Validates the MAP command:
+     * <ul>
+     *   <li>Leaf columns exist in the child output and have representable types.</li>
+     *   <li>Sub-pipeline nodes do not implement {@link PipelineBreaker} and do not nest another
+     *       {@link MapCommand}.</li>
+     *   <li>The RETURNING column is present in the sub-pipeline output.</li>
+     * </ul>
+     */
+    private static void checkMapCommand(LogicalPlan p, Failures failures) {
+        if ((p instanceof MapCommand) == false) {
+            return;
+        }
+        MapCommand mapCmd = (MapCommand) p;
+        List<Attribute> childOutput = mapCmd.child().output();
+
+        // Validate leaf columns.
+        for (MapCombinator.Leaf leaf : mapCmd.combinator().leaves()) {
+            if (leaf.channel() < 0) {
+                failures.add(fail(mapCmd, "MAP combinator references unknown column [{}]", leaf.name()));
+                continue;
+            }
+            DataType leafType = childOutput.get(leaf.channel()).dataType();
+            if (DataType.isRepresentable(leafType) == false) {
+                failures.add(fail(mapCmd, "MAP combinator column [{}] has unsupported type [{}]", leaf.name(), leafType.typeName()));
+            }
+        }
+
+        // Validate sub-pipeline nodes.
+        mapCmd.subPipeline().forEachDown(subNode -> {
+            if (subNode instanceof PipelineBreaker || subNode instanceof MapCommand) {
+                failures.add(
+                    fail(
+                        mapCmd,
+                        "MAP sub-pipeline cannot contain pipeline-breaking commands such as [{}]",
+                        subNode.getClass().getSimpleName()
+                    )
+                );
+            }
+        });
+
+        // Validate that the RETURNING column is produced by the sub-pipeline.
+        if (mapCmd.returningAttr().resolved()) {
+            String returningName = mapCmd.returningAttr().name();
+            boolean found = mapCmd.subPipeline().output().stream().anyMatch(a -> a.name().equals(returningName));
+            if (found == false) {
+                failures.add(fail(mapCmd, "MAP RETURNING column [{}] is not produced by the sub-pipeline", returningName));
             }
         }
     }

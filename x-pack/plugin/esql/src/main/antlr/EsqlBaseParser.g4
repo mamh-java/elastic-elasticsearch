@@ -82,6 +82,7 @@ processingCommand
     | {this.isDevVersion()}? insistCommand
     | {this.isDevVersion()}? dedupCommand
     | {this.isDevVersion()}? highlightCommand
+    | {this.isDevVersion()}? mapCommand
     ;
 
 whereCommand
@@ -401,6 +402,29 @@ dedupCommand
 
 highlightCommand
     : DEV_HIGHLIGHT queryText=string ON highlightFields=qualifiedNames commandNamedParameters
+    ;
+
+mapCommand
+    : MAP mapCombinator MAP_RETURNING returnCol=qualifiedName
+      OPENING_BRACKET mapSubPipeline CLOSING_BRACKET
+    ;
+
+// CROSS binds tighter than ZIP (like * vs +)
+mapCombinator
+    : mapCombinatorCross (MAP_ZIP mapCombinatorCross)*
+    ;
+
+mapCombinatorCross
+    : mapCombinatorAtom (MAP_CROSS mapCombinatorAtom)*
+    ;
+
+mapCombinatorAtom
+    : qualifiedName
+    | LP mapCombinator RP
+    ;
+
+mapSubPipeline
+    : processingCommand (PIPE processingCommand)*
     ;
 
 qualifiedNames

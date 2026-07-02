@@ -12,6 +12,7 @@ import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.ElementType;
 import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.operator.Operator.OperatorFactory;
 import org.elasticsearch.core.Releasables;
 
 import java.util.ArrayList;
@@ -45,6 +46,44 @@ import java.util.List;
  * </p>
  */
 public class MapContractOperator implements Operator {
+
+    /**
+     * Factory for creating {@link MapContractOperator} instances.
+     *
+     * @param mapPosChannel    channel index of {@code _map_pos}
+     * @param mapPageIdChannel channel index of {@code _map_page_id}
+     * @param returningChannel channel index of the RETURNING column
+     * @param mapColChannels   channel indices of {@code _map_col_*} columns
+     * @param sourceChannels   channel indices of original (non-hidden) columns
+     * @param tracker          the shared page tracker
+     */
+    public record Factory(
+        int mapPosChannel,
+        int mapPageIdChannel,
+        int returningChannel,
+        int[] mapColChannels,
+        int[] sourceChannels,
+        MapPageTracker tracker
+    ) implements OperatorFactory {
+        @Override
+        public Operator get(DriverContext driverContext) {
+            return new MapContractOperator(
+                mapPosChannel,
+                mapPageIdChannel,
+                returningChannel,
+                mapColChannels,
+                sourceChannels,
+                0,
+                driverContext,
+                tracker
+            );
+        }
+
+        @Override
+        public String describe() {
+            return "MapContractOperator[mapPosChannel=" + mapPosChannel + ", returningChannel=" + returningChannel + "]";
+        }
+    }
 
     private final int mapPosChannel;
     private final int mapPageIdChannel;

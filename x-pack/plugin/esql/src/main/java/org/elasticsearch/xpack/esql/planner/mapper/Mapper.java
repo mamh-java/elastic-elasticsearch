@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.planner.mapper;
 
 import org.elasticsearch.compute.aggregation.AggregatorMode;
+import org.elasticsearch.compute.operator.MapCombinator;
 import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
@@ -23,6 +24,7 @@ import org.elasticsearch.xpack.esql.plan.logical.LeafPlan;
 import org.elasticsearch.xpack.esql.plan.logical.Limit;
 import org.elasticsearch.xpack.esql.plan.logical.LimitBy;
 import org.elasticsearch.xpack.esql.plan.logical.LogicalPlan;
+import org.elasticsearch.xpack.esql.plan.logical.MapCommand;
 import org.elasticsearch.xpack.esql.plan.logical.MetricsInfo;
 import org.elasticsearch.xpack.esql.plan.logical.PipelineBreaker;
 import org.elasticsearch.xpack.esql.plan.logical.TopN;
@@ -39,6 +41,8 @@ import org.elasticsearch.xpack.esql.plan.physical.LimitByExec;
 import org.elasticsearch.xpack.esql.plan.physical.LimitExec;
 import org.elasticsearch.xpack.esql.plan.physical.LocalSourceExec;
 import org.elasticsearch.xpack.esql.plan.physical.LookupJoinExec;
+import org.elasticsearch.xpack.esql.plan.physical.MapContractExec;
+import org.elasticsearch.xpack.esql.plan.physical.MapExpandExec;
 import org.elasticsearch.xpack.esql.plan.physical.MergeExec;
 import org.elasticsearch.xpack.esql.plan.physical.MetricsInfoExec;
 import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
@@ -81,6 +85,10 @@ public class Mapper {
 
         if (p instanceof Fork fork) {
             return mapFork(fork);
+        }
+
+        if (p instanceof MapCommand mapCmd) {
+            return mapMapCommand(mapCmd);
         }
 
         return MapperUtils.unsupported(p);
@@ -275,6 +283,26 @@ public class Mapper {
         }
 
         return new MergeExec(fork.source(), newChildren, fork.output());
+    }
+
+    private PhysicalPlan mapMapCommand(MapCommand mapCmd) {
+        PhysicalPlan mappedChild = mapInner(mapCmd.child());
+        // Build the list of leaf column names from the combinator.
+        List<String> leafNames = mapCmd.combinator().leaves().stream().map(MapCombinator.Leaf::name).toList();
+        int mapPosChannel = mappedChild.output().size() + leafNames.size();
+        MapExpandExec expandExec = new MapExpandExec(
+            mapCmd.source(),
+            mappedChild,
+            mapCmd.combinator(),
+            leafNames,
+            mapPosChannel,
+            MapExpandExec.buildOutput(mappedChild.output(), List.of(), mapCmd.returningAttr())
+        );
+        // Map the sub-pipeline on top of the expand exec (stub).
+        PhysicalPlan subPipelinePhysical = mapInner(mapCmd.subPipeline());
+        // Wrap the sub-pipeline in a MapContractExec.
+        int returningChannel = subPipelinePhysical.output().size() - 1;
+        return new MapContractExec(mapCmd.source(), subPipelinePhysical, mapPosChannel, returningChannel, mapCmd.output());
     }
 
     /**

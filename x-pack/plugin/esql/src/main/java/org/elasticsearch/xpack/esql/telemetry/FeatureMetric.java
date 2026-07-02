@@ -131,6 +131,7 @@ public enum FeatureMetric {
     IP_LOCATION(plan -> plan instanceof IpLocation || plan instanceof UnresolvedIpLocation),
     DEDUP(Dedup.class::isInstance),
     HIGHLIGHT(Highlight.class::isInstance),
+    MAP(org.elasticsearch.xpack.esql.plan.logical.MapCommand.class::isInstance),
     // IN_SUBQUERY is collected by InSubqueryResolver on the pre-resolution plan (when the
     // InSubquery expression is still in place); by the time the Analyzer/Verifier walk runs,
     // InSubquery has already been rewritten to SemiJoin/AntiJoin/MarkJoin.

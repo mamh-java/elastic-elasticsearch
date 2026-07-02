@@ -856,6 +856,56 @@ public interface EsqlBaseParserListener extends ParseTreeListener {
    */
   void exitHighlightCommand(EsqlBaseParser.HighlightCommandContext ctx);
   /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#mapCommand}.
+   * @param ctx the parse tree
+   */
+  void enterMapCommand(EsqlBaseParser.MapCommandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#mapCommand}.
+   * @param ctx the parse tree
+   */
+  void exitMapCommand(EsqlBaseParser.MapCommandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#mapCombinator}.
+   * @param ctx the parse tree
+   */
+  void enterMapCombinator(EsqlBaseParser.MapCombinatorContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#mapCombinator}.
+   * @param ctx the parse tree
+   */
+  void exitMapCombinator(EsqlBaseParser.MapCombinatorContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#mapCombinatorCross}.
+   * @param ctx the parse tree
+   */
+  void enterMapCombinatorCross(EsqlBaseParser.MapCombinatorCrossContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#mapCombinatorCross}.
+   * @param ctx the parse tree
+   */
+  void exitMapCombinatorCross(EsqlBaseParser.MapCombinatorCrossContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#mapCombinatorAtom}.
+   * @param ctx the parse tree
+   */
+  void enterMapCombinatorAtom(EsqlBaseParser.MapCombinatorAtomContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#mapCombinatorAtom}.
+   * @param ctx the parse tree
+   */
+  void exitMapCombinatorAtom(EsqlBaseParser.MapCombinatorAtomContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#mapSubPipeline}.
+   * @param ctx the parse tree
+   */
+  void enterMapSubPipeline(EsqlBaseParser.MapSubPipelineContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#mapSubPipeline}.
+   * @param ctx the parse tree
+   */
+  void exitMapSubPipeline(EsqlBaseParser.MapSubPipelineContext ctx);
+  /**
    * Enter a parse tree produced by {@link EsqlBaseParser#qualifiedNames}.
    * @param ctx the parse tree
    */

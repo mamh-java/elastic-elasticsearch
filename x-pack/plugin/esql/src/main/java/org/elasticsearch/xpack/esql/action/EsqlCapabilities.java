@@ -3143,6 +3143,12 @@ public class EsqlCapabilities {
         DEDUP_COMMAND(Build.current().isSnapshot()),
 
         /**
+         * Support for the {@code MAP} command, which applies a sub-pipeline to expanded multi-valued columns.
+         * Snapshot-only.
+         */
+        MAP_COMMAND(Build.current().isSnapshot()),
+
+        /**
          * Support for VALUES with date_range type.
          */
         VALUES_DATE_RANGE(DATE_RANGE_FIELD_TYPE_V6.isEnabled()),

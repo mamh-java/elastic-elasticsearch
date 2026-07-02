@@ -14,6 +14,7 @@ import org.elasticsearch.common.lucene.BytesRefs;
 import org.elasticsearch.compute.data.AggregateMetricDoubleBlockBuilder;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.operator.MapCombinator;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.Strings;
 import org.elasticsearch.index.IndexMode;
@@ -156,6 +157,7 @@ import org.elasticsearch.xpack.esql.plan.logical.Limit;
 import org.elasticsearch.xpack.esql.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.esql.plan.logical.Lookup;
 import org.elasticsearch.xpack.esql.plan.logical.MMR;
+import org.elasticsearch.xpack.esql.plan.logical.MapCommand;
 import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.OrderBy;
 import org.elasticsearch.xpack.esql.plan.logical.Project;
@@ -183,6 +185,7 @@ import org.elasticsearch.xpack.esql.plan.logical.join.JoinTypes;
 import org.elasticsearch.xpack.esql.plan.logical.join.LookupJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.MarkJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.SemiJoin;
+import org.elasticsearch.xpack.esql.plan.logical.local.EmptyLocalSupplier;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalRelation;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalSupplier;
 import org.elasticsearch.xpack.esql.plan.logical.local.ResolvingProject;
@@ -1051,6 +1054,7 @@ public class Analyzer extends ParameterizedRuleExecutor<LogicalPlan, AnalyzerCon
                 case Rename r -> resolveRename(r, context.unmappedResolution());
                 case Keep k -> resolveKeep(k, context.unmappedResolution());
                 case Fork f -> resolveFork(f);
+                case MapCommand mapCmd -> resolveMapCommand(mapCmd, childrenOutput);
                 case Eval p -> resolveEval(p, childrenOutput);
                 case Enrich p -> resolveEnrich(p, childrenOutput);
                 case MvExpand p -> resolveMvExpand(p, childrenOutput);
@@ -1645,6 +1649,129 @@ public class Analyzer extends ParameterizedRuleExecutor<LogicalPlan, AnalyzerCon
             List<String> outputColumns
         ) {
             return unionAll instanceof UnionAll && outputColumns.isEmpty() && subquery.output().equals(NO_FIELDS);
+        }
+
+        private LogicalPlan resolveMapCommand(MapCommand mapCmd, List<Attribute> childrenOutput) {
+            List<MapCombinator.Leaf> oldLeaves = mapCmd.combinator().leaves();
+
+            // Resolve each leaf name against the child output to get the actual attribute and channel index.
+            List<MapCombinator.Leaf> newLeaves = new ArrayList<>(oldLeaves.size());
+            boolean combinatorChanged = false;
+            for (int i = 0; i < oldLeaves.size(); i++) {
+                MapCombinator.Leaf oldLeaf = oldLeaves.get(i);
+                String leafName = oldLeaf.name();
+                if (oldLeaf.channel() < 0) {
+                    // Find the attribute in the child output by name.
+                    int channel = -1;
+                    for (int c = 0; c < childrenOutput.size(); c++) {
+                        if (childrenOutput.get(c).name().equals(leafName)) {
+                            channel = c;
+                            break;
+                        }
+                    }
+                    MapCombinator.Leaf newLeaf = new MapCombinator.Leaf(channel, leafName);
+                    newLeaves.add(newLeaf);
+                    if (channel != oldLeaf.channel()) {
+                        combinatorChanged = true;
+                    }
+                } else {
+                    newLeaves.add(oldLeaf);
+                }
+            }
+
+            // Rebuild the combinator tree with resolved channel indices.
+            MapCombinator newCombinator = combinatorChanged
+                ? rebuildCombinator(mapCmd.combinator(), oldLeaves, newLeaves)
+                : mapCmd.combinator();
+
+            // Build a LocalRelation whose output is the _map_col_<name> synthetic attributes.
+            List<Attribute> leafAttrs = new ArrayList<>(newLeaves.size());
+            for (MapCombinator.Leaf leaf : newLeaves) {
+                DataType leafType;
+                if (leaf.channel() >= 0 && leaf.channel() < childrenOutput.size()) {
+                    leafType = childrenOutput.get(leaf.channel()).dataType();
+                } else {
+                    leafType = DataType.NULL;
+                }
+                leafAttrs.add(new ReferenceAttribute(mapCmd.source(), null, "_map_col_" + leaf.name(), leafType));
+            }
+            LocalRelation leafSource = new LocalRelation(mapCmd.source(), leafAttrs, EmptyLocalSupplier.EMPTY);
+
+            // Rebuild the sub-pipeline starting from leafSource, replacing the placeholder Row.
+            LogicalPlan subPipeline = rebuildSubPipeline(mapCmd.subPipeline(), leafSource, newLeaves, leafAttrs);
+
+            // Resolve the RETURNING attribute against the sub-pipeline output.
+            Attribute newReturning = mapCmd.returningAttr();
+            if (newReturning instanceof UnresolvedAttribute ua) {
+                newReturning = maybeResolveAttribute(ua, subPipeline.output());
+            }
+
+            boolean changed = combinatorChanged
+                || newCombinator != mapCmd.combinator()
+                || subPipeline != mapCmd.subPipeline()
+                || newReturning != mapCmd.returningAttr();
+            if (changed == false) {
+                return mapCmd;
+            }
+            return mapCmd.withSubPipeline(subPipeline).withCombinatorAndReturning(newCombinator, newReturning);
+        }
+
+        /**
+         * Rebuilds the sub-pipeline by replacing the placeholder {@link Row} source with
+         * {@code leafSource}, and rewrites references to original leaf names with the
+         * corresponding {@code _map_col_<name>} attributes.
+         */
+        private LogicalPlan rebuildSubPipeline(
+            LogicalPlan subPipeline,
+            LocalRelation leafSource,
+            List<MapCombinator.Leaf> leaves,
+            List<Attribute> leafAttrs
+        ) {
+            // Build a name → _map_col_<name> attribute map for rewriting.
+            Map<String, Attribute> leafAttrByName = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < leaves.size(); i++) {
+                leafAttrByName.put(leaves.get(i).name(), leafAttrs.get(i));
+            }
+
+            // Replace the bottom-most Row placeholder with leafSource.
+            LogicalPlan rebuilt = subPipeline.transformDown(p -> {
+                if (p instanceof Row) {
+                    return leafSource;
+                }
+                return p;
+            });
+
+            // Rewrite UnresolvedAttribute references matching leaf names to the synthetic _map_col_* attributes.
+            rebuilt = rebuilt.transformExpressionsDown(
+                UnresolvedAttribute.class,
+                ua -> leafAttrByName.containsKey(ua.name()) ? leafAttrByName.get(ua.name()) : ua
+            );
+
+            return rebuilt;
+        }
+
+        /**
+         * Rebuilds the combinator tree, replacing old leaf nodes with new resolved ones.
+         */
+        private static MapCombinator rebuildCombinator(
+            MapCombinator combinator,
+            List<MapCombinator.Leaf> oldLeaves,
+            List<MapCombinator.Leaf> newLeaves
+        ) {
+            return switch (combinator) {
+                case MapCombinator.Leaf oldLeaf -> {
+                    int idx = oldLeaves.indexOf(oldLeaf);
+                    yield idx >= 0 ? newLeaves.get(idx) : oldLeaf;
+                }
+                case MapCombinator.Cross cross -> new MapCombinator.Cross(
+                    rebuildCombinator(cross.left(), oldLeaves, newLeaves),
+                    rebuildCombinator(cross.right(), oldLeaves, newLeaves)
+                );
+                case MapCombinator.Zip zip -> new MapCombinator.Zip(
+                    rebuildCombinator(zip.left(), oldLeaves, newLeaves),
+                    rebuildCombinator(zip.right(), oldLeaves, newLeaves)
+                );
+            };
         }
 
         private LogicalPlan resolveRerank(Rerank rerank, List<Attribute> childrenOutput, AnalyzerContext context) {

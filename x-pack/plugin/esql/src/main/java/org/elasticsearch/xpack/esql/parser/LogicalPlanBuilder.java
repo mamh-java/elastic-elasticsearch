@@ -15,6 +15,7 @@ import org.elasticsearch.Build;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.common.logging.HeaderWarning;
 import org.elasticsearch.common.lucene.BytesRefs;
+import org.elasticsearch.compute.operator.MapCombinator;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.core.Tuple;
 import org.elasticsearch.dissect.DissectException;
@@ -77,6 +78,7 @@ import org.elasticsearch.xpack.esql.plan.logical.LimitBy;
 import org.elasticsearch.xpack.esql.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.esql.plan.logical.Lookup;
 import org.elasticsearch.xpack.esql.plan.logical.MMR;
+import org.elasticsearch.xpack.esql.plan.logical.MapCommand;
 import org.elasticsearch.xpack.esql.plan.logical.MetricsInfo;
 import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.OrderBy;
@@ -1263,6 +1265,63 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
             return equals.negate();
         }
         return f;
+    }
+
+    @Override
+    public PlanFactory visitMapCommand(EsqlBaseParser.MapCommandContext ctx) {
+        Source src = source(ctx);
+        MapCombinator combinator = buildMapCombinator(ctx.mapCombinator());
+        UnresolvedAttribute returningAttr = visitQualifiedName(ctx.returnCol);
+        // Build sub-pipeline by applying each processing command in sequence.
+        // The source for the sub-pipeline is a placeholder empty Row; the analyzer
+        // replaces it with a LocalRelation containing the leaf columns.
+        List<PlanFactory> subCmds = new ArrayList<>();
+        for (EsqlBaseParser.ProcessingCommandContext cmdCtx : ctx.mapSubPipeline().processingCommand()) {
+            subCmds.add(typedParsing(this, cmdCtx, PlanFactory.class));
+        }
+        return input -> {
+            LogicalPlan subPipeline = new Row(src, List.of());
+            for (PlanFactory cmdFactory : subCmds) {
+                subPipeline = cmdFactory.apply(subPipeline);
+            }
+            return new MapCommand(src, input, combinator, returningAttr, subPipeline);
+        };
+    }
+
+    private MapCombinator buildMapCombinator(EsqlBaseParser.MapCombinatorContext ctx) {
+        List<EsqlBaseParser.MapCombinatorCrossContext> zipChildren = ctx.mapCombinatorCross();
+        if (zipChildren.size() == 1) {
+            return buildMapCombinatorCross(zipChildren.get(0));
+        }
+        // Build left-associative ZIP tree
+        MapCombinator result = buildMapCombinatorCross(zipChildren.get(0));
+        for (int i = 1; i < zipChildren.size(); i++) {
+            result = new MapCombinator.Zip(result, buildMapCombinatorCross(zipChildren.get(i)));
+        }
+        return result;
+    }
+
+    private MapCombinator buildMapCombinatorCross(EsqlBaseParser.MapCombinatorCrossContext ctx) {
+        List<EsqlBaseParser.MapCombinatorAtomContext> crossChildren = ctx.mapCombinatorAtom();
+        if (crossChildren.size() == 1) {
+            return buildMapCombinatorAtom(crossChildren.get(0));
+        }
+        // Build left-associative CROSS tree
+        MapCombinator result = buildMapCombinatorAtom(crossChildren.get(0));
+        for (int i = 1; i < crossChildren.size(); i++) {
+            result = new MapCombinator.Cross(result, buildMapCombinatorAtom(crossChildren.get(i)));
+        }
+        return result;
+    }
+
+    private MapCombinator buildMapCombinatorAtom(EsqlBaseParser.MapCombinatorAtomContext ctx) {
+        if (ctx.qualifiedName() != null) {
+            UnresolvedAttribute attr = visitQualifiedName(ctx.qualifiedName());
+            // Channel -1 is a placeholder; the analyzer resolves the actual channel index.
+            return new MapCombinator.Leaf(-1, attr.name());
+        }
+        // Parenthesized combinator
+        return buildMapCombinator(ctx.mapCombinator());
     }
 
     @Override

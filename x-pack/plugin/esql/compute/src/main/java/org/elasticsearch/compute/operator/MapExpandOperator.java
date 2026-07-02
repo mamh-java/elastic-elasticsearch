@@ -10,6 +10,7 @@ package org.elasticsearch.compute.operator;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.operator.Operator.OperatorFactory;
 import org.elasticsearch.core.Releasables;
 
 import java.util.Arrays;
@@ -39,6 +40,35 @@ import java.util.Arrays;
  * </p>
  */
 public class MapExpandOperator implements Operator {
+
+    /**
+     * Factory for creating {@link MapExpandOperator} instances.
+     *
+     * @param combinator    the combinator tree
+     * @param leafChannels  channel indices for each leaf in tree traversal order
+     * @param leafNames     column names for each leaf
+     * @param mapPosChannel the output channel index for {@code _map_pos}
+     * @param maxPageSize   maximum rows per output page
+     * @param tracker       the shared page tracker
+     */
+    public record Factory(
+        MapCombinator combinator,
+        int[] leafChannels,
+        String[] leafNames,
+        int mapPosChannel,
+        int maxPageSize,
+        MapPageTracker tracker
+    ) implements OperatorFactory {
+        @Override
+        public Operator get(DriverContext driverContext) {
+            return new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, maxPageSize, driverContext, tracker);
+        }
+
+        @Override
+        public String describe() {
+            return "MapExpandOperator[combinator=" + combinator + "]";
+        }
+    }
 
     private final MapCombinator combinator;
     private final int[] leafChannels;
