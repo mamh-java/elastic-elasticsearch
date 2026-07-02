@@ -46,6 +46,10 @@ import org.elasticsearch.compute.operator.LimitOperator;
 import org.elasticsearch.compute.operator.LocalSourceOperator;
 import org.elasticsearch.compute.operator.LocalSourceOperator.LocalSourceFactory;
 import org.elasticsearch.compute.operator.MMROperator;
+import org.elasticsearch.compute.operator.MapContractOperator;
+import org.elasticsearch.compute.operator.MapExpandOperator;
+import org.elasticsearch.compute.operator.MapPageTracker;
+import org.elasticsearch.compute.operator.MapPageTrackerHolder;
 import org.elasticsearch.compute.operator.MetricFieldInfo;
 import org.elasticsearch.compute.operator.MetricsInfoOperator;
 import org.elasticsearch.compute.operator.MvExpandOperator;
@@ -324,7 +328,8 @@ public class LocalExecutionPlanner {
             timeSeries,
             settings,
             shardContexts,
-            physicalOperationProviders.analysisRegistry()
+            physicalOperationProviders.analysisRegistry(),
+            new HashMap<>()
         );
 
         // workaround for https://github.com/elastic/elasticsearch/issues/99782
@@ -2019,23 +2024,98 @@ public class LocalExecutionPlanner {
     }
 
     /**
-     * Stub planner for the MAP expand phase.
+     * Plans the MAP expand phase. Creates the single {@link MapPageTracker} shared with the paired
+     * contract phase and stashes it in the planner context keyed by this exec node, so
+     * {@link #planMapContract} reuses the very same instance within the Driver. The tracker is a
+     * Driver-local {@link org.elasticsearch.compute.operator.DriverLocalChannel} that
+     * {@link MapExpandOperator.Factory#get} registers as a Driver releasable, so it is closed with
+     * the Driver.
      * <p>
-     *     Wiring the {@link org.elasticsearch.compute.operator.MapExpandOperator.Factory} requires a
-     *     {@link org.elasticsearch.compute.operator.MapPageTracker} shared with the matching contract
-     *     operator in the same {@link org.elasticsearch.compute.operator.Driver}. That shared-state plumbing
-     *     is not modelled on the physical plan yet, so execution of a MAP command is not supported.
+     *     The expanded layout is source channels, then one {@code _map_col_<name>} channel per leaf,
+     *     then {@code _map_pos}, then {@code _map_page_id}; matching {@link MapExpandOperator}'s output.
      * </p>
      */
     private PhysicalOperation planMapExpand(MapExpandExec mapExpand, LocalExecutionPlannerContext context) {
-        throw new UnsupportedOperationException("MAP command execution is not implemented yet [" + mapExpand + "]");
+        PhysicalOperation source = plan(mapExpand.child(), context);
+
+        // Input channels the operator reads for each combinator leaf, in leaf order.
+        int[] leafChannels = mapExpand.leafSourceAttributes()
+            .stream()
+            .mapToInt(attr -> source.layout.get(attr.id()).channel())
+            .toArray();
+        String[] leafNames = mapExpand.leafNames().toArray(new String[0]);
+
+        // Build the expanded layout: existing source channels, then _map_col_* leaf channels,
+        // then _map_pos, then _map_page_id.
+        Layout.Builder layout = source.layout.builder();
+        for (Attribute mapCol : mapExpand.mapColAttributes()) {
+            layout.append(mapCol);
+        }
+        layout.append(mapExpand.mapPosAttr());
+        layout.append(mapExpand.mapPageIdAttr());
+        Layout expandedLayout = layout.build();
+
+        int mapPosChannel = expandedLayout.get(mapExpand.mapPosAttr().id()).channel();
+
+        // One tracker per Driver, shared with the paired contract phase. The holder is created here and
+        // looked up by the _map_pos NameId when planning the contract node; the holder vends a distinct
+        // tracker per Driver so concurrent Drivers do not share (and double-close) a single tracker.
+        MapPageTrackerHolder trackerHolder = new MapPageTrackerHolder();
+        context.mapPageTrackers().put(mapExpand.mapPosAttr().id(), trackerHolder);
+
+        int maxPageSize = 5000; // TODO estimate row size and use context.pageSize(), mirroring planMvExpand
+        return source.with(
+            new MapExpandOperator.Factory(mapExpand.combinator(), leafChannels, leafNames, mapPosChannel, maxPageSize, trackerHolder),
+            expandedLayout
+        );
     }
 
     /**
-     * Stub planner for the MAP contract phase. See {@link #planMapExpand} for why this is not implemented yet.
+     * Plans the MAP contract phase. Reuses the {@link MapPageTracker} created for the paired
+     * {@link MapExpandExec} (looked up from the planner context by node identity) so the expand and
+     * contract operators in the same Driver share exactly one tracker.
+     * <p>
+     *     Output is the original source columns followed by RETURNING; {@code _map_pos},
+     *     {@code _map_page_id}, and {@code _map_col_*} are stripped.
+     * </p>
      */
     private PhysicalOperation planMapContract(MapContractExec mapContract, LocalExecutionPlannerContext context) {
-        throw new UnsupportedOperationException("MAP command execution is not implemented yet [" + mapContract + "]");
+        PhysicalOperation source = plan(mapContract.child(), context);
+
+        MapExpandExec expandExec = mapContract.expandExec();
+        MapPageTrackerHolder trackerHolder = context.mapPageTrackers().get(expandExec.mapPosAttr().id());
+        if (trackerHolder == null) {
+            throw new IllegalStateException("MAP contract planned without its paired expand tracker [" + mapContract + "]");
+        }
+
+        int mapPosChannel = source.layout.get(expandExec.mapPosAttr().id()).channel();
+        int mapPageIdChannel = source.layout.get(expandExec.mapPageIdAttr().id()).channel();
+        int returningChannel = source.layout.get(mapContract.returningAttr().id()).channel();
+        int[] mapColChannels = expandExec.mapColAttributes()
+            .stream()
+            .mapToInt(attr -> source.layout.get(attr.id()).channel())
+            .toArray();
+        int[] sourceChannels = mapContract.sourceAttributes()
+            .stream()
+            .mapToInt(attr -> source.layout.get(attr.id()).channel())
+            .toArray();
+
+        // Contracted layout: source columns followed by RETURNING.
+        Layout.Builder layout = new Layout.Builder();
+        layout.append(mapContract.sourceAttributes());
+        layout.append(mapContract.returningAttr());
+
+        return source.with(
+            new MapContractOperator.Factory(
+                mapPosChannel,
+                mapPageIdChannel,
+                returningChannel,
+                mapColChannels,
+                sourceChannels,
+                trackerHolder
+            ),
+            layout.build()
+        );
     }
 
     private PhysicalOperation planTimeSeriesCollapse(TimeSeriesCollapseExec collapse, LocalExecutionPlannerContext context) {
@@ -2250,7 +2330,12 @@ public class LocalExecutionPlanner {
         boolean timeSeries,
         Settings settings,
         IndexedByShardId<? extends ShardContext> shardContexts,
-        @Nullable AnalysisRegistry analysisRegistry
+        @Nullable AnalysisRegistry analysisRegistry,
+        // Per-Driver MapPageTracker vendors created when planning a MapExpandExec, keyed by the stable
+        // NameId of the synthetic _map_pos attribute so the paired MapContractExec can reuse the very same
+        // holder. Keying by NameId (rather than node identity) survives physical-plan copies made by the
+        // optimizer; the holder itself creates one tracker per Driver.
+        Map<NameId, MapPageTrackerHolder> mapPageTrackers
     ) {
         void addDriverFactory(DriverFactory driverFactory) {
             driverFactories.add(driverFactory);

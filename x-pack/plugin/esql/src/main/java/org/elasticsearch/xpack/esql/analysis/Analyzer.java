@@ -2375,6 +2375,16 @@ public class Analyzer extends ParameterizedRuleExecutor<LogicalPlan, AnalyzerCon
 
         @Override
         protected LogicalPlan rule(LogicalPlan plan, AnalyzerContext context) {
+            // MapCommand holds its sub-pipeline off the main plan tree, so transformExpressionsUp does
+            // not reach it. Rewrite the sub-pipeline's configuration-aware expressions explicitly so the
+            // marker configuration injected by the parser is replaced with the real one.
+            if (plan instanceof MapCommand mapCmd && mapCmd.subPipeline() != null) {
+                LogicalPlan newSubPipeline = mapCmd.subPipeline()
+                    .transformExpressionsUp(Expression.class, e -> resolveConfigurationAware(e, context.configuration()));
+                if (newSubPipeline != mapCmd.subPipeline()) {
+                    plan = mapCmd.withSubPipeline(newSubPipeline);
+                }
+            }
             return plan.transformExpressionsUp(
                 Expression.class,
                 expression -> resolveConfigurationAware(expression, context.configuration())

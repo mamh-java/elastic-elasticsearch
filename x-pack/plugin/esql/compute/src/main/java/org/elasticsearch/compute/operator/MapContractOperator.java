@@ -55,7 +55,7 @@ public class MapContractOperator implements Operator {
      * @param returningChannel channel index of the RETURNING column
      * @param mapColChannels   channel indices of {@code _map_col_*} columns
      * @param sourceChannels   channel indices of original (non-hidden) columns
-     * @param tracker          the shared page tracker
+     * @param trackerHolder    vends the per-Driver page tracker shared with the paired expand operator
      */
     public record Factory(
         int mapPosChannel,
@@ -63,10 +63,12 @@ public class MapContractOperator implements Operator {
         int returningChannel,
         int[] mapColChannels,
         int[] sourceChannels,
-        MapPageTracker tracker
+        MapPageTrackerHolder trackerHolder
     ) implements OperatorFactory {
         @Override
         public Operator get(DriverContext driverContext) {
+            // Reuse the same Driver-local tracker the paired MapExpandOperator created for this Driver.
+            MapPageTracker tracker = trackerHolder.get(driverContext);
             return new MapContractOperator(
                 mapPosChannel,
                 mapPageIdChannel,

@@ -12,6 +12,8 @@ import org.elasticsearch.compute.operator.MapCombinator;
 import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
+import org.elasticsearch.xpack.esql.core.expression.ReferenceAttribute;
+import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.expression.function.grouping.GroupingFunction;
 import org.elasticsearch.xpack.esql.plan.logical.Aggregate;
 import org.elasticsearch.xpack.esql.plan.logical.BinaryPlan;
@@ -75,6 +77,12 @@ public class Mapper {
             return mapLeaf(leaf);
         }
 
+        // MapCommand extends UnaryPlan, so it must be matched before the generic UnaryPlan branch;
+        // otherwise mapUnary would absorb the whole MAP node into a data-node fragment.
+        if (p instanceof MapCommand mapCmd) {
+            return mapMapCommand(mapCmd);
+        }
+
         if (p instanceof UnaryPlan unary) {
             return mapUnary(unary);
         }
@@ -85,10 +93,6 @@ public class Mapper {
 
         if (p instanceof Fork fork) {
             return mapFork(fork);
-        }
-
-        if (p instanceof MapCommand mapCmd) {
-            return mapMapCommand(mapCmd);
         }
 
         return MapperUtils.unsupported(p);
@@ -287,22 +291,81 @@ public class Mapper {
 
     private PhysicalPlan mapMapCommand(MapCommand mapCmd) {
         PhysicalPlan mappedChild = mapInner(mapCmd.child());
-        // Build the list of leaf column names from the combinator.
-        List<String> leafNames = mapCmd.combinator().leaves().stream().map(MapCombinator.Leaf::name).toList();
-        int mapPosChannel = mappedChild.output().size() + leafNames.size();
+        // MAP runs on the coordinator (its expand/contract exec nodes are snapshot-only, non-serialized).
+        // If the child mapped to a data-node fragment, insert an exchange so the fragment stays on the
+        // data nodes and the MAP pipeline (which would otherwise be serialized into the DataNodeRequest)
+        // executes on the coordinator over the exchanged rows.
+        if (mappedChild instanceof FragmentExec) {
+            mappedChild = new ExchangeExec(mappedChild.source(), mappedChild);
+        }
+
+        // The combinator leaves reference original child columns by channel; resolve them to the
+        // source attributes so the planner can look up the physical input channels for the operator.
+        List<MapCombinator.Leaf> leaves = mapCmd.combinator().leaves();
+        List<String> leafNames = leaves.stream().map(MapCombinator.Leaf::name).toList();
+        List<Attribute> childOutput = mapCmd.child().output();
+        List<Attribute> leafSourceAttributes = new ArrayList<>(leaves.size());
+        for (MapCombinator.Leaf leaf : leaves) {
+            leafSourceAttributes.add(childOutput.get(leaf.channel()));
+        }
+
+        // The sub-pipeline was analyzed starting from a LocalRelation whose output is the synthetic
+        // _map_col_<name> attributes. Map it, then find that leaf and reuse its output attributes so
+        // the expand node emits exactly the attribute ids the sub-pipeline references.
+        PhysicalPlan subPipelinePhysical = mapInner(mapCmd.subPipeline());
+        LocalSourceExec leafSource = findMapLeafSource(subPipelinePhysical);
+        List<Attribute> mapColAttributes = leafSource.output();
+
+        // Synthetic channels emitted by the expand operator after the source and _map_col_* channels.
+        Attribute mapPosAttr = new ReferenceAttribute(mapCmd.source(), "_map_pos", DataType.INTEGER);
+        Attribute mapPageIdAttr = new ReferenceAttribute(mapCmd.source(), "_map_page_id", DataType.INTEGER);
+
         MapExpandExec expandExec = new MapExpandExec(
             mapCmd.source(),
             mappedChild,
             mapCmd.combinator(),
             leafNames,
-            mapPosChannel,
-            MapExpandExec.buildOutput(mappedChild.output(), List.of(), mapCmd.returningAttr())
+            leafSourceAttributes,
+            mapColAttributes,
+            mapPosAttr,
+            mapPageIdAttr,
+            MapExpandExec.buildOutput(mappedChild.output(), mapColAttributes, mapPosAttr, mapPageIdAttr)
         );
-        // Map the sub-pipeline on top of the expand exec (stub).
-        PhysicalPlan subPipelinePhysical = mapInner(mapCmd.subPipeline());
-        // Wrap the sub-pipeline in a MapContractExec.
-        int returningChannel = subPipelinePhysical.output().size() - 1;
-        return new MapContractExec(mapCmd.source(), subPipelinePhysical, mapPosChannel, returningChannel, mapCmd.output());
+
+        // Splice the expand node in as the source of the sub-pipeline, replacing the analyzer's
+        // placeholder LocalSourceExec so the sub-pipeline runs over the expanded rows.
+        PhysicalPlan subPipelineOverExpand = subPipelinePhysical.transformDown(
+            LocalSourceExec.class,
+            local -> local == leafSource ? expandExec : local
+        );
+
+        // Contract collapses the expanded rows back to one row per source position, keeping the
+        // original source columns and appending RETURNING. It references the expand node so the
+        // planner can share the single MapPageTracker created for this Driver.
+        return new MapContractExec(
+            mapCmd.source(),
+            subPipelineOverExpand,
+            expandExec,
+            mapCmd.returningAttr(),
+            childOutput,
+            mapCmd.output()
+        );
+    }
+
+    /**
+     * Finds the bottom-most {@link LocalSourceExec} placeholder that the analyzer inserted as the
+     * source of a MAP sub-pipeline (its output is the synthetic {@code _map_col_<name>} columns).
+     */
+    private static LocalSourceExec findMapLeafSource(PhysicalPlan subPipeline) {
+        PhysicalPlan node = subPipeline;
+        while (node instanceof LocalSourceExec == false) {
+            List<PhysicalPlan> children = node.children();
+            if (children.size() != 1) {
+                throw new EsqlIllegalArgumentException("MAP sub-pipeline must be a linear plan, found [{}]", node);
+            }
+            node = children.get(0);
+        }
+        return (LocalSourceExec) node;
     }
 
     /**

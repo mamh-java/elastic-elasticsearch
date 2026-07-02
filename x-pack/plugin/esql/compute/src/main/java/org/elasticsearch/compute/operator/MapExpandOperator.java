@@ -49,7 +49,7 @@ public class MapExpandOperator implements Operator {
      * @param leafNames     column names for each leaf
      * @param mapPosChannel the output channel index for {@code _map_pos}
      * @param maxPageSize   maximum rows per output page
-     * @param tracker       the shared page tracker
+     * @param trackerHolder vends the per-Driver page tracker shared with the paired contract operator
      */
     public record Factory(
         MapCombinator combinator,
@@ -57,10 +57,13 @@ public class MapExpandOperator implements Operator {
         String[] leafNames,
         int mapPosChannel,
         int maxPageSize,
-        MapPageTracker tracker
+        MapPageTrackerHolder trackerHolder
     ) implements OperatorFactory {
         @Override
         public Operator get(DriverContext driverContext) {
+            // Obtain (and lazily create + register) the Driver-local tracker shared with the paired
+            // MapContractOperator, so it is created once per Driver and closed with the Driver.
+            MapPageTracker tracker = trackerHolder.get(driverContext);
             return new MapExpandOperator(combinator, leafChannels, leafNames, mapPosChannel, maxPageSize, driverContext, tracker);
         }
 

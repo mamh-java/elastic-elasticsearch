@@ -12,6 +12,7 @@ import org.elasticsearch.compute.operator.MapCombinator;
 import org.elasticsearch.xpack.esql.capabilities.TelemetryAware;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.AttributeSet;
+import org.elasticsearch.xpack.esql.core.expression.UnresolvedAttribute;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 
@@ -91,9 +92,22 @@ public class MapCommand extends UnaryPlan implements TelemetryAware {
 
     @Override
     protected AttributeSet computeReferences() {
-        // References include the combinator leaves (resolved against child output)
-        // and the sub-pipeline input columns.
-        return AttributeSet.EMPTY;
+        // MAP reads the combinator leaf columns from its child. Surfacing them here ensures field
+        // resolution loads those source fields (FieldNameUtils) and column pruning keeps them
+        // (PruneColumns), even though the sub-pipeline that consumes them is held off-tree.
+        // Before resolution the leaf channels are -1, so fall back to name-only UnresolvedAttributes;
+        // once resolved we reference the concrete child-output attributes.
+        List<Attribute> childOutput = child().output();
+        AttributeSet.Builder refs = AttributeSet.builder();
+        for (MapCombinator.Leaf leaf : combinator.leaves()) {
+            int channel = leaf.channel();
+            if (channel >= 0 && channel < childOutput.size()) {
+                refs.add(childOutput.get(channel));
+            } else {
+                refs.add(new UnresolvedAttribute(source(), leaf.name()));
+            }
+        }
+        return refs.build();
     }
 
     @Override

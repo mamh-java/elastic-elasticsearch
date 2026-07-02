@@ -11,6 +11,7 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.AttributeSet;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
+import java.util.ArrayList;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 
 import java.io.IOException;
@@ -18,12 +19,18 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Physical plan node stub for the contract phase of the MAP command.
+ * Physical plan node for the contract phase of the MAP command.
  * <p>
- *     Re-collapses the expanded rows produced by {@link MapExpandExec} back into one
- *     output row per original document position. The {@code _map_pos} channel identifies
- *     which source position each expanded row belongs to; the RETURNING channel value is
- *     merged into a single (possibly multi-valued) output column.
+ *     Re-collapses the expanded rows produced by {@link MapExpandExec} back into one output row
+ *     per original document position. The {@code _map_pos} channel identifies which source
+ *     position each expanded row belongs to; the RETURNING channel value is merged into a single
+ *     (possibly multi-valued) output column. The {@code _map_pos}, {@code _map_page_id}, and
+ *     {@code _map_col_<name>} channels are stripped; output is the source columns followed by
+ *     RETURNING.
+ * </p>
+ * <p>
+ *     This node references its paired {@link MapExpandExec} so the planner can share the single
+ *     {@code MapPageTracker} created for the expand phase within the same Driver.
  * </p>
  * <p>
  *     Physical plans are not serialized, so this node does not implement
@@ -32,14 +39,23 @@ import java.util.Objects;
  */
 public class MapContractExec extends UnaryExec {
 
-    private final int mapPosChannel;
-    private final int returningChannel;
+    private final MapExpandExec expandExec;
+    private final Attribute returningAttr;
+    private final List<Attribute> sourceAttributes;
     private final List<Attribute> output;
 
-    public MapContractExec(Source source, PhysicalPlan child, int mapPosChannel, int returningChannel, List<Attribute> output) {
+    public MapContractExec(
+        Source source,
+        PhysicalPlan child,
+        MapExpandExec expandExec,
+        Attribute returningAttr,
+        List<Attribute> sourceAttributes,
+        List<Attribute> output
+    ) {
         super(source, child);
-        this.mapPosChannel = mapPosChannel;
-        this.returningChannel = returningChannel;
+        this.expandExec = expandExec;
+        this.returningAttr = returningAttr;
+        this.sourceAttributes = sourceAttributes;
         this.output = output;
     }
 
@@ -53,12 +69,22 @@ public class MapContractExec extends UnaryExec {
         throw new UnsupportedOperationException("not serialized");
     }
 
-    public int mapPosChannel() {
-        return mapPosChannel;
+    /**
+     * The paired expand node, used by the planner to look up the shared {@code MapPageTracker}.
+     */
+    public MapExpandExec expandExec() {
+        return expandExec;
     }
 
-    public int returningChannel() {
-        return returningChannel;
+    public Attribute returningAttr() {
+        return returningAttr;
+    }
+
+    /**
+     * The original source columns passed through to the contracted output, in output order.
+     */
+    public List<Attribute> sourceAttributes() {
+        return sourceAttributes;
     }
 
     @Override
@@ -68,22 +94,30 @@ public class MapContractExec extends UnaryExec {
 
     @Override
     protected AttributeSet computeReferences() {
-        return AttributeSet.EMPTY;
+        // The contract operator reads the source columns (passed through), the RETURNING column, and
+        // the synthetic _map_pos / _map_page_id / _map_col_* channels emitted by the paired expand
+        // node. Declaring these keeps them alive through column pruning.
+        List<Attribute> refs = new ArrayList<>(sourceAttributes);
+        refs.add(returningAttr);
+        refs.add(expandExec.mapPosAttr());
+        refs.add(expandExec.mapPageIdAttr());
+        refs.addAll(expandExec.mapColAttributes());
+        return AttributeSet.of(refs);
     }
 
     @Override
     public MapContractExec replaceChild(PhysicalPlan newChild) {
-        return new MapContractExec(source(), newChild, mapPosChannel, returningChannel, output);
+        return new MapContractExec(source(), newChild, expandExec, returningAttr, sourceAttributes, output);
     }
 
     @Override
     protected NodeInfo<MapContractExec> info() {
-        return NodeInfo.create(this, MapContractExec::new, child(), mapPosChannel, returningChannel, output);
+        return NodeInfo.create(this, MapContractExec::new, child(), expandExec, returningAttr, sourceAttributes, output);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(child(), mapPosChannel, returningChannel, output);
+        return Objects.hash(child(), expandExec, returningAttr, sourceAttributes, output);
     }
 
     @Override
@@ -96,13 +130,14 @@ public class MapContractExec extends UnaryExec {
         }
         MapContractExec other = (MapContractExec) obj;
         return Objects.equals(child(), other.child())
-            && mapPosChannel == other.mapPosChannel
-            && returningChannel == other.returningChannel
+            && Objects.equals(expandExec, other.expandExec)
+            && Objects.equals(returningAttr, other.returningAttr)
+            && Objects.equals(sourceAttributes, other.sourceAttributes)
             && Objects.equals(output, other.output);
     }
 
     @Override
     public String toString() {
-        return getClass().getSimpleName() + "[mapPosChannel=" + mapPosChannel + ", returningChannel=" + returningChannel + "]";
+        return getClass().getSimpleName() + "[returningAttr=" + returningAttr + "]";
     }
 }
