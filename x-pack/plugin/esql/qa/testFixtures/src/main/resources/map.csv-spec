@@ -1,0 +1,221 @@
+// MAP command: builds a per-document mini-table from multi-value columns, runs a
+// stateless sub-pipeline over it, and writes the result back as a multi-value
+// RETURNING column. CROSS is the cartesian product; ZIP is positional pairing with
+// PAD semantics (null-pad the shorter side). CROSS binds tighter than ZIP.
+//
+// All cases are gated on the map_command capability, which is snapshot-only.
+
+crossEval
+required_capability: map_command
+
+ROW a = [1, 2], b = [10, 20]
+| MAP a CROSS b RETURNING s [ EVAL s = a + b ]
+| KEEP s
+;
+
+s:integer
+[11, 21, 12, 22]
+;
+
+crossWhere
+required_capability: map_command
+
+ROW a = [1, 2], b = [10, 20]
+| MAP a CROSS b RETURNING s [ EVAL s = a + b | WHERE s > 15 ]
+| KEEP s
+;
+
+s:integer
+[21, 22]
+;
+
+crossEvalThenWhere
+required_capability: map_command
+
+ROW a = [1, 2, 3], b = [10, 20]
+| MAP a CROSS b RETURNING s [ EVAL s = a + b | WHERE s % 2 == 0 ]
+| KEEP s
+;
+
+s:integer
+[12, 22]
+;
+
+zipEqualLength
+required_capability: map_command
+
+ROW a = [1, 2], b = [10, 20]
+| MAP a ZIP b RETURNING s [ EVAL s = a + b ]
+| KEEP s
+;
+
+s:integer
+[11, 22]
+;
+
+zipMismatchedLengths
+required_capability: map_command
+
+ROW a = [1, 2, 3], b = [10, 20]
+| MAP a ZIP b RETURNING s [ EVAL s = b ]
+| KEEP s
+;
+
+s:integer
+[10, 20]
+;
+
+zipMismatchedLengthsSum
+required_capability: map_command
+
+ROW a = [1, 2, 3], b = [10, 20]
+| MAP a ZIP b RETURNING s [ EVAL s = a + b ]
+| KEEP s
+;
+
+s:integer
+[11, 22]
+;
+
+zipWhereNotNull
+required_capability: map_command
+
+ROW a = [1, 2, 3], b = [10, 20]
+| MAP a ZIP b RETURNING s [ EVAL s = a | WHERE b IS NOT NULL ]
+| KEEP s
+;
+
+s:integer
+[1, 2]
+;
+
+crossSingleValuedColumn
+required_capability: map_command
+
+ROW a = [1, 2, 3], b = 10
+| MAP a CROSS b RETURNING s [ EVAL s = a + b ]
+| KEEP s
+;
+
+s:integer
+[11, 12, 13]
+;
+
+crossSingleValuedColumnMatchesLeafOnly
+required_capability: map_command
+
+ROW a = [1, 2, 3], b = 10
+| MAP a RETURNING s [ EVAL s = a + b ]
+| KEEP s
+;
+
+s:integer
+[11, 12, 13]
+;
+
+mixedCrossZip
+required_capability: map_command
+
+ROW a = [1, 2], b = [10, 20], c = [100, 200]
+| MAP a CROSS (b ZIP c) RETURNING s [ EVAL s = a + b + c ]
+| KEEP s
+;
+
+s:integer
+[111, 221, 112, 222]
+;
+
+precedenceZipCross
+required_capability: map_command
+
+ROW a = [1, 2], b = [10, 20], c = [100, 200]
+| MAP a ZIP b CROSS c RETURNING s [ EVAL s = a + b + c ]
+| KEEP s
+;
+
+s:integer
+[111, 212]
+;
+
+precedenceExplicitParens
+required_capability: map_command
+
+ROW a = [1, 2], b = [10, 20], c = [100, 200]
+| MAP a ZIP (b CROSS c) RETURNING s [ EVAL s = a + b + c ]
+| KEEP s
+;
+
+s:integer
+[111, 212]
+;
+
+whereEliminatesAllRows
+required_capability: map_command
+
+ROW a = [1, 2]
+| MAP a RETURNING s [ EVAL s = a | WHERE a > 100 ]
+| KEEP s
+;
+
+s:integer
+null
+;
+
+whereEliminatesAllRowsPerDocument
+required_capability: map_command
+
+FROM employees
+| WHERE emp_no == 10001 OR emp_no == 10003
+| SORT emp_no
+| MAP salary RETURNING s [ EVAL s = salary | WHERE salary > 60000 ]
+| KEEP emp_no, s
+;
+
+emp_no:integer | s:integer
+10001          | null
+10003          | 61805
+;
+
+mapAfterEvalWhereSort
+required_capability: map_command
+
+FROM employees
+| WHERE salary > 50000
+| EVAL bump = salary + 1
+| SORT emp_no
+| LIMIT 3
+| MAP salary CROSS bump RETURNING s [ EVAL s = salary + bump ]
+| KEEP emp_no, s
+;
+
+emp_no:integer | s:integer
+10001          | 114611
+10002          | 112743
+10003          | 123611
+;
+
+mapThenStats
+required_capability: map_command
+
+ROW a = [1, 2], b = [10, 20]
+| MAP a CROSS b RETURNING s [ EVAL s = a + b ]
+| MV_EXPAND s
+| STATS total = sum(s)
+;
+
+total:long
+66
+;
+
+mapThenMvCount
+required_capability: map_command
+
+ROW a = [1, 2, 3], b = [10, 20]
+| MAP a CROSS b RETURNING s [ EVAL s = a + b ]
+| EVAL n = MV_COUNT(s)
+| KEEP n
+;
+
+n:integer
+6
+;
