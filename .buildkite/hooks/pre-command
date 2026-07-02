@@ -111,7 +111,7 @@ if [[ "${USE_PI_AGENT:-}" == "true" ]]; then
   export PATH="${HOME}/.local/bin:${PATH}"
 
   # Bootstrap pi-agent if not already cached on this agent.
-  PI_AGENT_TAG="${PI_AGENT_TAG:-pi-agent-v1.0.2}"
+  PI_AGENT_TAG="${PI_AGENT_TAG:-pi-agent-v1.0.21}"
   PI_AGENT_DIR="${HOME}/.local/pi-agent"
 
   if [[ ! -x "${PI_AGENT_DIR}/bin/pi-agent.js" ]]; then
@@ -149,8 +149,18 @@ if [[ "${USE_PI_AGENT:-}" == "true" ]]; then
     ln -sf "${PI_AGENT_DIR}/bin/pi-agent.js" "${HOME}/.local/bin/pi-agent"
     chmod +x "${PI_AGENT_DIR}/bin/pi-agent.js"
     rm -rf "${TMPDIR_DL}"
-    unset GH_ADMIN_TOKEN
   fi
+
+  # Override GH_TOKEN with the admin token so pi-agent can post comments and
+  # apply labels on elastic/elasticsearch issues via `gh issue comment` and
+  # `gh issue edit`.
+  export GH_TOKEN="${GH_ADMIN_TOKEN}"
+  unset GH_ADMIN_TOKEN
+
+  # No external nono CLI bootstrap needed: pi-agent v1.0.21+ sandboxes itself
+  # in-process via the bundled nono-ts SDK (activated by PI_AGENT_SANDBOX=1 in
+  # run-pi-agent.sh). This replaces the old `nono run` supervised wrapper, which
+  # failed under Landlock with exit 127 when re-resolving the script interpreter.
 fi
 # ── end pi-agent ──────────────────────────────────────────────────────────────
 

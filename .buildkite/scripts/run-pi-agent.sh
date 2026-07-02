@@ -65,104 +65,27 @@ buildkite-agent annotate \
 Session is initialising…" \
   --context "pi-agent-progress" --style "info"
 
-# ── Run pi-agent (nono sandbox) ────────────────────────────────────────────────
-# pi-agent drives git, gh, Gradle, and LLM APIs — run it with least-privilege
-# filesystem access. Network is left open (LiteLLM, GitHub, Buildkite, GE all
-# need outbound HTTPS). --startup-timeout 0 skips the TUI-detection heuristic
-# since pi-agent is non-interactive. --silent suppresses the nono banner so CI
-# logs stay readable.
-# Filesystem grants, network allowlist, and vault command block live in the
-# bundled nono-pi-agent.json profile (ships with the pi-agent distro).
-# Only SESSION_DIR is dynamic at runtime and must stay here as a CLI flag.
-# Resolve the nono profile from the repo (relative to this script).
-# Using the repo-local profile rather than the bundled pi-agent one because:
-#   - the bundled profile lacks "extends": "default", so nono has no access to
-#     system paths (/usr/bin/env, libc, etc.) and exits 127 on every shebang exec.
-#   - node_runtime group is required to allow the NVM-installed node interpreter.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NONO_PROFILE="${SCRIPT_DIR}/../nono-pi-agent.json"
+# ── Run pi-agent (in-process nono sandbox) ─────────────────────────────────────
+# pi-agent sandboxes ITSELF via the bundled nono-ts SDK when PI_AGENT_SANDBOX=1
+# (Landlock on Linux). Applying the sandbox in-process — after node has started
+# and its libraries are mapped — avoids the `nono run` CLI's supervised re-exec,
+# which re-resolved pi-agent's `#!/usr/bin/env node` interpreter under the
+# sandbox and died with exit 127 before any agent code ran. The filesystem
+# allowlist, Vault-handle scrubbing, and fail-closed behaviour live in the
+# pi-agent distro (packages/pi-agent/src/sandbox.js + nono-pi-agent.json).
+# Network is left open in-process; host-level egress control, if ever required,
+# belongs at the VM/firewall layer.
+export PI_AGENT_SANDBOX=1
 
-NONO_ARGS=(
-  --profile "${NONO_PROFILE}"
-  --allow-cwd                # required in non-interactive mode (--startup-timeout 0) even when profile has workdir.access=readwrite
-  --allow "${SESSION_DIR}"   # runtime path for JSONL session snapshots; not known at profile-authoring time
-  --startup-timeout 0        # non-interactive — skip TUI-readiness check
-  --silent                   # suppress nono banner/summary in CI logs
-)
-
-# Redirect stdin from /dev/null so process.stdin.isTTY is false inside the nono
-# PTY sandbox. Without this, the pi SDK detects a TTY (nono allocates one for
-# the supervised child) and starts in interactive TUI mode, which triggers
-# terminal capability queries and signal handling that fail on Linux under
-# Landlock V6 signal scoping, resulting in exit 127.
 PI_EXIT=0
 case "${WORKFLOW}" in
   test-analysis)
-    nono run "${NONO_ARGS[@]}" -- pi-agent analyze --issue-url "${ISSUE_URL}" </dev/null || PI_EXIT=$? ;;
+    pi-agent analyze --issue-url "${ISSUE_URL}" || PI_EXIT=$? ;;
   pull-request-fix)
-    nono run "${NONO_ARGS[@]}" -- pi-agent fix-pr  --pr-url    "${PR_URL}"    </dev/null || PI_EXIT=$? ;;
+    pi-agent fix-pr  --pr-url    "${PR_URL}"    || PI_EXIT=$? ;;
   pull-request-creation)
-    nono run "${NONO_ARGS[@]}" -- pi-agent create  --issue-url "${ISSUE_URL}" </dev/null || PI_EXIT=$? ;;
+    pi-agent create  --issue-url "${ISSUE_URL}" || PI_EXIT=$? ;;
 esac
-
-# ── Nono sandbox summary ─────────────────────────────────────────────────────
-# Post a Buildkite annotation listing everything nono blocked during this run.
-# The audit log is written by default; we fetch the most-recent session (CI
-# serialises to concurrency=1 so there is no ambiguity) and extract denials.
-_nono_audit_annotation() {
-  command -v nono &>/dev/null || return
-  command -v jq   &>/dev/null || return
-
-  local session_id
-  session_id=$(
-    nono audit list --recent 1 --json 2>/dev/null \
-      | jq -r 'if type == "array" then .[0].id else (.sessions // [])[0].id end // empty' \
-      2>/dev/null
-  )
-  [[ -z "${session_id:-}" ]] && return
-
-  local audit_json
-  audit_json=$(nono audit show "${session_id}" --json 2>/dev/null) || return
-
-  local denials net_blocks
-  denials=$(
-    echo "${audit_json}" | jq -r '
-      [ .audit_events[]?
-        | select(.decision == "deny"
-              or ((.type // "") | test("den(y|ied)"; "i")))
-      ]
-      | if length == 0 then empty
-        else "**Capability denials (\(length)):**\n"
-             + (map("- `" + (.command // .path // .target // "?") + "`") | join("\n"))
-        end
-    ' 2>/dev/null
-  )
-
-  net_blocks=$(
-    echo "${audit_json}" | jq -r '
-      [ .network_events[]?
-        | select(.blocked == true or .status == 403 or .action == "deny")
-      ]
-      | if length == 0 then empty
-        else "**Network blocks (\(length)):**\n"
-             + (map("- `" + (.host // .url // "?") + "`") | join("\n"))
-        end
-    ' 2>/dev/null
-  )
-
-  [[ -z "${denials:-}" && -z "${net_blocks:-}" ]] && return
-
-  local body=""
-  [[ -n "${denials:-}" ]]    && body+="${denials}"
-  [[ -n "${net_blocks:-}" ]] && body+=$'\n\n'"${net_blocks}"
-
-  buildkite-agent annotate \
-    "### 🛡️ nono sandbox — blocked calls (session \`${session_id}\`)
-
-${body}" \
-    --context "nono-sandbox-summary" --style "warning" 2>/dev/null || true
-}
-_nono_audit_annotation
 
 # ── Final annotation ───────────────────────────────────────────────────────────
 if [[ $PI_EXIT -eq 0 ]]; then
