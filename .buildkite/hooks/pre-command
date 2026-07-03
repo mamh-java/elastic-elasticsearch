@@ -124,8 +124,11 @@ if [[ "${USE_ARCHIMEDES:-}" == "true" ]]; then
   # (ARCHIMEDES_REF) until packages/archimedes lands on the default branch.
   ARCHIMEDES_REPO="${ARCHIMEDES_REPO:-elastic/elasticsearch-infra}"
   ARCHIMEDES_REF="${ARCHIMEDES_REF:-add-archimedes}"
-  _archimedes_latest_tag=$(gh api "repos/${ARCHIMEDES_REPO}/releases" \
-    --jq '[.[] | select(.tag_name | startswith("archimedes-"))] | first | .tag_name' 2>/dev/null || echo "")
+  _archimedes_latest_tag=$(gh api "repos/${ARCHIMEDES_REPO}/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+  if [ -z "${_archimedes_latest_tag:-}" ] || [ "${_archimedes_latest_tag}" = "null" ]; then
+    _archimedes_latest_tag=$(gh api "repos/${ARCHIMEDES_REPO}/releases" \
+      --jq '[.[] | select(.tag_name | startswith("archimedes-"))] | sort_by(.created_at) | last | .tag_name' 2>/dev/null || echo "")
+  fi
   _archimedes_latest_ver="${_archimedes_latest_tag#archimedes-v}"
   _archimedes_installed_ver=$(archimedes version 2>/dev/null || echo "none")
   if [[ "${_archimedes_installed_ver}" != "${_archimedes_latest_ver}" ]]; then
