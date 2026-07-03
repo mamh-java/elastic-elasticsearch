@@ -7,6 +7,8 @@
 
 package org.elasticsearch.xpack.core.security.cloud;
 
+import org.elasticsearch.common.settings.SecureString;
+
 import static org.elasticsearch.test.ESTestCase.randomAlphaOfLength;
 import static org.elasticsearch.test.ESTestCase.randomByteArrayOfLength;
 import static org.elasticsearch.test.ESTestCase.randomIntBetween;
@@ -33,6 +35,13 @@ public final class CloudCredentialTestUtils {
      */
     public static PersistedCloudCredential randomPersistedCloudCredential(String id) {
         return new PersistedCloudCredential(id, randomCloudCredentialEncryptedData());
+    }
+
+    /**
+     * A plaintext (v1) {@link PersistedCloudCredential}, for BWC / degradation tests.
+     */
+    public static PersistedCloudCredential randomPlaintextPersistedCloudCredential() {
+        return PersistedCloudCredential.plaintext(randomAlphaOfLength(10), new SecureString(randomAlphaOfLength(24).toCharArray()));
     }
 
     /**

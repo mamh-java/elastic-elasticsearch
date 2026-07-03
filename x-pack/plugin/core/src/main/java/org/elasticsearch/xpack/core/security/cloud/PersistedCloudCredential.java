@@ -11,113 +11,257 @@ import org.elasticsearch.TransportVersion;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.settings.SecureString;
+import org.elasticsearch.common.util.CachedSupplier;
+import org.elasticsearch.core.Nullable;
+import org.elasticsearch.core.Releasable;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
+import org.elasticsearch.xcontent.ObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.ToXContentObject;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
 /**
- * Persistence envelope for a cloud-managed credential. v2 stores AES-256-GCM ciphertext
- * ({@link CloudCredentialEncryptedData}) instead of the plaintext API key.
- * The at-rest XContent format is always v2; v1 documents are rejected at parse time.
+ * Persistence envelope for a cloud-managed credential, pairing the public API key {@code id} with the internal API key material.
+ *
+ * <p>Two at-rest forms are supported, discriminated by {@code version}:
+ * <ul>
+ *   <li><b>v1 (plaintext)</b> — the internal API key is stored as-is in the {@code value} field. This is the legacy format and the
+ *       explicit opt-out format written only when cluster-state encryption is unavailable and {@code cluster.state.encryption.required}
+ *       is {@code false}.</li>
+ *   <li><b>v2 (encrypted)</b> — the internal API key is stored as AES-256-GCM ciphertext in {@code encrypted}
+ *       ({@link CloudCredentialEncryptedData}) under the per-project cloud credential encryption key. This is the default.</li>
+ * </ul>
+ *
+ * <p>Both forms remain readable so that dev-cluster upgrades and the plaintext opt-out are non-breaking. New credentials are written
+ * encrypted (v2) whenever the encryption key is available; see the serverless grant path. The version-to-payload mapping and all
+ * version/field references live in {@link Format}, so adding a form is a single enum constant plus its compiler-checked switch branches.
  */
-public final class PersistedCloudCredential implements Writeable, ToXContentObject {
+public final class PersistedCloudCredential implements Writeable, ToXContentObject, Releasable {
 
-    public static final int CURRENT_VERSION = 2;
+    /** Plaintext at-rest form: {@code value} holds the internal API key. */
+    public static final int PLAINTEXT_VERSION = 1;
+
+    /** Encrypted at-rest form: {@code encrypted} holds the ciphertext. */
+    public static final int ENCRYPTED_VERSION = 2;
+
+    /** The version stamped on newly created credentials (always encrypted). */
+    public static final int CURRENT_VERSION = ENCRYPTED_VERSION;
 
     /**
-     * Guards the v2 wire format. Peers that do not yet support this version cannot receive
-     * a v2 credential on the wire; publishing to such peers will throw {@link IllegalStateException}.
+     * Guards the v2 wire format. Peers that do not yet support this version cannot receive a v2 credential on the wire; publishing to
+     * such peers throws {@link IllegalStateException}. The v1 (plaintext) form serializes to any peer.
      */
     public static final TransportVersion CLOUD_CREDENTIAL_ENCRYPTION = TransportVersion.fromName("cloud_credential_encryption");
 
     private static final ParseField VERSION_FIELD = new ParseField("version");
     private static final ParseField ID_FIELD = new ParseField("id");
-    private static final ParseField ENCRYPTED_FIELD = new ParseField("encrypted");
+
+    /**
+     * The at-rest forms, discriminated by the persisted {@code version} int. Single source of truth for each form's version number and
+     * payload field, so parsing, validation, and error messages carry no per-version literals.
+     */
+    private enum Format {
+        PLAINTEXT(PLAINTEXT_VERSION, new ParseField("value")),
+        ENCRYPTED(ENCRYPTED_VERSION, new ParseField("encrypted"));
+
+        private final int version;
+        private final ParseField field;
+
+        Format(int version, ParseField field) {
+            this.version = version;
+            this.field = field;
+        }
+
+        // Fixed set of supported versions for the unsupported-version error message; computed lazily on first use and cached (so no
+        // work at class-load time). List#toString yields "[1, 2]".
+        private static final Supplier<String> SUPPORTED_VERSIONS = CachedSupplier.wrap(
+            () -> Arrays.stream(values()).map(f -> f.version).toList().toString()
+        );
+
+        static Format fromVersion(int version) {
+            for (Format format : values()) {
+                if (format.version == version) {
+                    return format;
+                }
+            }
+            throw new IllegalStateException(
+                "unsupported at-rest version [" + version + "], supported versions are " + SUPPORTED_VERSIONS.get()
+            );
+        }
+
+        IllegalStateException requiresPayloadField() {
+            return new IllegalStateException("at-rest version [" + version + "] requires the [" + field.getPreferredName() + "] field");
+        }
+    }
 
     private static final ConstructingObjectParser<PersistedCloudCredential, Void> PARSER = new ConstructingObjectParser<>(
         "persisted_cloud_credential",
         true,
         args -> {
             int version = (int) args[0];
-            if (version != CURRENT_VERSION) {
-                throw new IllegalStateException(
-                    "unsupported at-rest version [" + version + "]; only [" + CURRENT_VERSION + "] is supported"
-                );
-            }
-            CloudCredentialEncryptedData encrypted = (CloudCredentialEncryptedData) args[2];
-            if (encrypted == null) {
-                throw new IllegalStateException("encrypted field is required");
-            }
-            return new PersistedCloudCredential((String) args[1], encrypted);
+            String id = (String) args[1];
+            SecureString value = (SecureString) args[2];
+            CloudCredentialEncryptedData encrypted = (CloudCredentialEncryptedData) args[3];
+            return switch (Format.fromVersion(version)) {
+                case PLAINTEXT -> {
+                    if (value == null) {
+                        throw Format.PLAINTEXT.requiresPayloadField();
+                    }
+                    yield PersistedCloudCredential.plaintext(id, value);
+                }
+                case ENCRYPTED -> {
+                    if (encrypted == null) {
+                        throw Format.ENCRYPTED.requiresPayloadField();
+                    }
+                    yield new PersistedCloudCredential(id, encrypted);
+                }
+            };
         }
     );
 
     static {
         PARSER.declareInt(constructorArg(), VERSION_FIELD);
         PARSER.declareString(constructorArg(), ID_FIELD);
-        PARSER.declareObject(optionalConstructorArg(), (p, c) -> CloudCredentialEncryptedData.fromXContent(p), ENCRYPTED_FIELD);
+        PARSER.declareField(
+            optionalConstructorArg(),
+            (p, c) -> new SecureString(p.text().toCharArray()),
+            Format.PLAINTEXT.field,
+            ObjectParser.ValueType.STRING
+        );
+        PARSER.declareObject(optionalConstructorArg(), (p, c) -> CloudCredentialEncryptedData.fromXContent(p), Format.ENCRYPTED.field);
     }
 
-    private final int version;
+    private final Format format;
     private final String id;
+    @Nullable
+    private final SecureString internalApiKey;
+    @Nullable
     private final CloudCredentialEncryptedData encrypted;
 
-    public PersistedCloudCredential(String id, CloudCredentialEncryptedData encrypted) {
-        this.version = CURRENT_VERSION;
+    private PersistedCloudCredential(
+        Format format,
+        String id,
+        @Nullable SecureString internalApiKey,
+        @Nullable CloudCredentialEncryptedData encrypted
+    ) {
+        this.format = format;
         this.id = Objects.requireNonNull(id, "id must not be null");
-        this.encrypted = Objects.requireNonNull(encrypted, "encrypted must not be null");
+        this.internalApiKey = internalApiKey;
+        this.encrypted = encrypted;
+        // Each format must carry exactly its own payload (never both, never neither). The factories enforce non-null on input; this
+        // guards the coupling against future callers and fails the build if a new Format is added without wiring its payload here.
+        assert switch (format) {
+            case PLAINTEXT -> internalApiKey != null && encrypted == null;
+            case ENCRYPTED -> encrypted != null && internalApiKey == null;
+        } : "payload does not match at-rest format [" + format + "]";
+    }
+
+    /**
+     * Creates an encrypted (v2) credential. This is the default at-rest form.
+     */
+    public PersistedCloudCredential(String id, CloudCredentialEncryptedData encrypted) {
+        this(Format.ENCRYPTED, id, null, Objects.requireNonNull(encrypted, "encrypted must not be null"));
+    }
+
+    /**
+     * Creates a plaintext (v1) credential. Only used for the {@code cluster.state.encryption.required=false} opt-out and for reading
+     * legacy documents.
+     */
+    public static PersistedCloudCredential plaintext(String id, SecureString internalApiKey) {
+        return new PersistedCloudCredential(
+            Format.PLAINTEXT,
+            id,
+            Objects.requireNonNull(internalApiKey, "internalApiKey must not be null"),
+            null
+        );
+    }
+
+    /**
+     * Creates an encrypted (v2) credential. Equivalent to {@link #PersistedCloudCredential(String, CloudCredentialEncryptedData)}.
+     */
+    public static PersistedCloudCredential encrypted(String id, CloudCredentialEncryptedData encrypted) {
+        return new PersistedCloudCredential(id, encrypted);
     }
 
     public PersistedCloudCredential(StreamInput in) throws IOException {
-        int wireVersion = in.readVInt();
+        this.format = Format.fromVersion(in.readVInt());
         this.id = in.readString();
-        this.encrypted = switch (wireVersion) {
-            case 2 -> new CloudCredentialEncryptedData(in);
-            default -> throw new IllegalStateException("unsupported wire version [" + wireVersion + "]");
-        };
-        this.version = CURRENT_VERSION;
+        SecureString plaintext = null;
+        CloudCredentialEncryptedData ciphertext = null;
+        switch (format) {
+            case PLAINTEXT -> plaintext = in.readSecureString();
+            case ENCRYPTED -> ciphertext = new CloudCredentialEncryptedData(in);
+        }
+        this.internalApiKey = plaintext;
+        this.encrypted = ciphertext;
     }
 
     public int version() {
-        return version;
+        return format.version;
     }
 
     public String id() {
         return id;
     }
 
+    /**
+     * The plaintext internal API key for a v1 credential, or {@code null} for v2. Only call this after checking {@link #version()}.
+     */
+    @Nullable
+    public SecureString internalApiKey() {
+        return internalApiKey;
+    }
+
+    /**
+     * The encrypted internal API key for a v2 credential, or {@code null} for v1. Only call this after checking {@link #version()}.
+     */
+    @Nullable
     public CloudCredentialEncryptedData encrypted() {
         return encrypted;
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        if (out.getTransportVersion().supports(CLOUD_CREDENTIAL_ENCRYPTION) == false) {
-            throw new IllegalStateException(
-                "cannot serialize to a peer that does not support transport version ["
-                    + CLOUD_CREDENTIAL_ENCRYPTION
-                    + "]; ensure all nodes are upgraded before publishing cloud credentials"
-            );
+        switch (format) {
+            case ENCRYPTED -> {
+                if (out.getTransportVersion().supports(CLOUD_CREDENTIAL_ENCRYPTION) == false) {
+                    throw new IllegalStateException(
+                        "cannot serialize PersistedCloudCredential to a peer that does not support transport version ["
+                            + CLOUD_CREDENTIAL_ENCRYPTION
+                            + "]. Ensure all nodes are upgraded before publishing encrypted cloud credentials"
+                    );
+                }
+                out.writeVInt(format.version);
+                out.writeString(id);
+                encrypted.writeTo(out);
+            }
+            case PLAINTEXT -> {
+                out.writeVInt(format.version);
+                out.writeString(id);
+                out.writeSecureString(internalApiKey);
+            }
         }
-        out.writeVInt(2);
-        out.writeString(id);
-        encrypted.writeTo(out);
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject();
-        builder.field(VERSION_FIELD.getPreferredName(), version);
+        builder.field(VERSION_FIELD.getPreferredName(), format.version);
         builder.field(ID_FIELD.getPreferredName(), id);
-        builder.field(ENCRYPTED_FIELD.getPreferredName(), encrypted);
+        switch (format) {
+            case PLAINTEXT -> builder.field(format.field.getPreferredName(), internalApiKey.toString());
+            case ENCRYPTED -> builder.field(format.field.getPreferredName(), encrypted);
+        }
         return builder.endObject();
     }
 
@@ -125,22 +269,40 @@ public final class PersistedCloudCredential implements Writeable, ToXContentObje
         return PARSER.parse(parser, null);
     }
 
+    /**
+     * Releases the underlying {@link SecureString} for a v1 credential; a no-op for v2.
+     */
+    @Override
+    public void close() {
+        if (internalApiKey != null) {
+            internalApiKey.close();
+        }
+    }
+
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
+        if (this == o) {
+            return true;
+        }
         if (o instanceof PersistedCloudCredential other) {
-            return version == other.version && id.equals(other.id) && encrypted.equals(other.encrypted);
+            return format == other.format
+                && id.equals(other.id)
+                && Objects.equals(internalApiKey, other.internalApiKey)
+                && Objects.equals(encrypted, other.encrypted);
         }
         return false;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(version, id, encrypted);
+        return Objects.hash(format, id, internalApiKey, encrypted);
     }
 
     @Override
     public String toString() {
-        return "PersistedCloudCredential{version=" + version + ", id=" + id + ", keyId=" + encrypted.keyId() + "}";
+        return switch (format) {
+            case PLAINTEXT -> "PersistedCloudCredential{version=" + format.version + ", id=" + id + ", internalApiKey=::es_redacted::}";
+            case ENCRYPTED -> "PersistedCloudCredential{version=" + format.version + ", id=" + id + ", keyId=" + encrypted.keyId() + "}";
+        };
     }
 }

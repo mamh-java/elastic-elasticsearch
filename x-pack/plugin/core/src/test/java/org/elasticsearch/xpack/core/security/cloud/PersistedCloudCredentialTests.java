@@ -10,9 +10,10 @@ package org.elasticsearch.xpack.core.security.cloud;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.test.ESTestCase;
+import org.elasticsearch.test.TransportVersionUtils;
 import org.elasticsearch.xcontent.XContentBuilder;
-import org.elasticsearch.xcontent.XContentParseException;
 import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xcontent.XContentParserConfiguration;
 import org.elasticsearch.xcontent.XContentType;
@@ -39,38 +40,43 @@ public class PersistedCloudCredentialTests extends ESTestCase {
         return new CloudCredentialEncryptedData(randomAlphaOfLength(22), randomByteArrayOfLength(29));
     }
 
-    public void testNewInstanceStampsCurrentVersion() {
+    public void testEncryptedInstanceStampsCurrentVersion() {
         var instance = new PersistedCloudCredential(TEST_ID, testEncryptedData());
         assertThat(instance.version(), is(equalTo(PersistedCloudCredential.CURRENT_VERSION)));
         assertThat(PersistedCloudCredential.CURRENT_VERSION, is(2));
+        assertThat(instance.encrypted(), is(not(equalTo(null))));
+        assertThat(instance.internalApiKey(), is(equalTo(null)));
+    }
+
+    public void testPlaintextInstanceStampsV1() {
+        var instance = PersistedCloudCredential.plaintext(TEST_ID, new SecureString("secret".toCharArray()));
+        assertThat(instance.version(), is(equalTo(PersistedCloudCredential.PLAINTEXT_VERSION)));
+        assertThat(instance.internalApiKey().toString(), is(equalTo("secret")));
+        assertThat(instance.encrypted(), is(equalTo(null)));
     }
 
     public void testXContentRoundTripV2() throws IOException {
-        CloudCredentialEncryptedData enc = testEncryptedData();
-        var original = new PersistedCloudCredential(TEST_ID, enc);
-
-        XContentBuilder builder = JsonXContent.contentBuilder();
-        original.toXContent(builder, null);
-        String json = Strings.toString(builder);
-
-        try (XContentParser parser = XContentType.JSON.xContent().createParser(XContentParserConfiguration.EMPTY, json)) {
-            var parsed = PersistedCloudCredential.fromXContent(parser);
-            assertThat(parsed, equalTo(original));
-        }
+        var original = new PersistedCloudCredential(TEST_ID, testEncryptedData());
+        assertThat(xContentRoundTrip(original), equalTo(original));
     }
 
-    public void testXContentRejectsV1() throws IOException {
+    public void testXContentRoundTripV1() throws IOException {
+        var original = PersistedCloudCredential.plaintext(TEST_ID, new SecureString("supersecret".toCharArray()));
+        assertThat(xContentRoundTrip(original), equalTo(original));
+    }
+
+    public void testXContentReadsLegacyV1Document() throws IOException {
         String v1Json = "{\"version\":1,\"id\":\"abc\",\"value\":\"supersecret\"}";
         try (XContentParser parser = XContentType.JSON.xContent().createParser(XContentParserConfiguration.EMPTY, v1Json)) {
-            // ConstructingObjectParser wraps constructor exceptions in XContentParseException
-            XContentParseException ex = expectThrows(XContentParseException.class, () -> PersistedCloudCredential.fromXContent(parser));
-            assertThat(ex.getCause().getMessage(), containsString("unsupported at-rest version [1]"));
+            var parsed = PersistedCloudCredential.fromXContent(parser);
+            assertThat(parsed.version(), is(1));
+            assertThat(parsed.id(), is("abc"));
+            assertThat(parsed.internalApiKey().toString(), is("supersecret"));
         }
     }
 
     public void testWireV2RoundTrip() throws IOException {
-        CloudCredentialEncryptedData enc = testEncryptedData();
-        var original = new PersistedCloudCredential(TEST_ID, enc);
+        var original = new PersistedCloudCredential(TEST_ID, testEncryptedData());
 
         BytesStreamOutput out = new BytesStreamOutput();
         out.setTransportVersion(PersistedCloudCredential.CLOUD_CREDENTIAL_ENCRYPTION);
@@ -78,19 +84,27 @@ public class PersistedCloudCredentialTests extends ESTestCase {
 
         StreamInput in = out.bytes().streamInput();
         in.setTransportVersion(PersistedCloudCredential.CLOUD_CREDENTIAL_ENCRYPTION);
-        var deserialized = new PersistedCloudCredential(in);
-        assertThat(deserialized, equalTo(original));
+        assertThat(new PersistedCloudCredential(in), equalTo(original));
     }
 
-    public void testWireThrowsForOldPeer() {
-        CloudCredentialEncryptedData enc = testEncryptedData();
-        var original = new PersistedCloudCredential(TEST_ID, enc);
+    public void testWireV1RoundTripToAnyPeer() throws IOException {
+        var original = PersistedCloudCredential.plaintext(TEST_ID, new SecureString("supersecret".toCharArray()));
 
         BytesStreamOutput out = new BytesStreamOutput();
-        // Use a version that does not support CLOUD_CREDENTIAL_ENCRYPTION
-        out.setTransportVersion(
-            org.elasticsearch.test.TransportVersionUtils.getPreviousVersion(PersistedCloudCredential.CLOUD_CREDENTIAL_ENCRYPTION)
-        );
+        // v1 serializes even to a peer that predates CLOUD_CREDENTIAL_ENCRYPTION
+        out.setTransportVersion(TransportVersionUtils.getPreviousVersion(PersistedCloudCredential.CLOUD_CREDENTIAL_ENCRYPTION));
+        original.writeTo(out);
+
+        StreamInput in = out.bytes().streamInput();
+        in.setTransportVersion(TransportVersionUtils.getPreviousVersion(PersistedCloudCredential.CLOUD_CREDENTIAL_ENCRYPTION));
+        assertThat(new PersistedCloudCredential(in), equalTo(original));
+    }
+
+    public void testWireV2ThrowsForOldPeer() {
+        var original = new PersistedCloudCredential(TEST_ID, testEncryptedData());
+
+        BytesStreamOutput out = new BytesStreamOutput();
+        out.setTransportVersion(TransportVersionUtils.getPreviousVersion(PersistedCloudCredential.CLOUD_CREDENTIAL_ENCRYPTION));
         IllegalStateException ex = expectThrows(IllegalStateException.class, () -> original.writeTo(out));
         assertThat(ex.getMessage(), containsString("cannot serialize PersistedCloudCredential to a peer that does not support"));
     }
@@ -100,5 +114,20 @@ public class PersistedCloudCredentialTests extends ESTestCase {
         String str = instance.toString();
         assertThat(str, containsString("key-1"));
         assertThat(str, not(containsString(Arrays.toString(TEST_PAYLOAD))));
+    }
+
+    public void testToStringDoesNotExposePlaintext() {
+        var instance = PersistedCloudCredential.plaintext(TEST_ID, new SecureString("supersecret".toCharArray()));
+        assertThat(instance.toString(), not(containsString("supersecret")));
+        assertThat(instance.toString(), containsString("::es_redacted::"));
+    }
+
+    private static PersistedCloudCredential xContentRoundTrip(PersistedCloudCredential original) throws IOException {
+        XContentBuilder builder = JsonXContent.contentBuilder();
+        original.toXContent(builder, null);
+        String json = Strings.toString(builder);
+        try (XContentParser parser = XContentType.JSON.xContent().createParser(XContentParserConfiguration.EMPTY, json)) {
+            return PersistedCloudCredential.fromXContent(parser);
+        }
     }
 }

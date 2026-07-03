@@ -20,6 +20,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.core.Tuple;
 import org.elasticsearch.index.query.QueryBuilder;
@@ -91,7 +92,7 @@ import static org.elasticsearch.xpack.core.ml.utils.ToXContentParams.EXCLUDE_GEN
  * used around integral types and booleans so they can take <code>null</code>
  * values.
  */
-public class DatafeedConfig implements SimpleDiffable<DatafeedConfig>, ToXContentObject {
+public class DatafeedConfig implements SimpleDiffable<DatafeedConfig>, ToXContentObject, Releasable {
 
     public static final int DEFAULT_SCROLL_SIZE = 1000;
 
@@ -665,6 +666,17 @@ public class DatafeedConfig implements SimpleDiffable<DatafeedConfig>, ToXConten
     @Nullable
     public PersistedCloudCredential getCloudInternalCredential() {
         return cloudInternalCredential;
+    }
+
+    /**
+     * Releases the underlying {@link PersistedCloudCredential} and its {@link org.elasticsearch.common.settings.SecureString}, if present.
+     * Idempotent: safe to call more than once.
+     */
+    @Override
+    public void close() {
+        if (cloudInternalCredential != null) {
+            cloudInternalCredential.close();
+        }
     }
 
     @Override

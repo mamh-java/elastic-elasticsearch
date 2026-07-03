@@ -316,7 +316,7 @@ public class TransformCloudCredentialManagerTests extends ESTestCase {
     public void testWrapWithPersistedIfPresentDelegatesToCredentialManagerWhenPersistedPresent() {
         var rawClient = mock(Client.class);
         var wrappedClient = mock(Client.class);
-        var persisted = new PersistedCloudCredential("id", new SecureString("key".toCharArray()));
+        var persisted = PersistedCloudCredential.plaintext("id", new SecureString("key".toCharArray()));
         var credentialManager = mock(CloudCredentialManager.class);
         when(credentialManager.wrapClient(rawClient, persisted)).thenReturn(wrappedClient);
         var manager = new TransformCloudCredentialManager(
