@@ -63,6 +63,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.elasticsearch.xpack.core.security.cloud.CloudCredentialTestUtils.randomCloudCredentialEncryptedData;
 import static org.elasticsearch.xpack.core.security.cloud.CloudCredentialTestUtils.randomPersistedCloudCredential;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
@@ -227,7 +228,7 @@ public class DatafeedManagerTests extends ESTestCase {
     }
 
     /**
-     * Simulates the {@link DatafeedConfigProvider#updateDatefeedConfigInternal} behaviour for the
+     * Simulates the {@code DatafeedConfigProvider#updateDatefeedConfigInternal} behaviour for the
      * {@link CredentialTransitions.Change.Mint} arm: applies the update to {@code storedConfig},
      * invokes the mint hook with the resulting config, then either returns a success tuple or
      * propagates {@code persistFailureOrNull} after the hook completes.
@@ -298,7 +299,7 @@ public class DatafeedManagerTests extends ESTestCase {
         when(credentialManager.extractCloudManagedCredential(any())).thenReturn(new CloudCredential(new SecureString("t".toCharArray())));
         when(client.threadPool()).thenReturn(threadPool);
         mockSearchProbeSucceeds(credentialManager, client);
-        mockGrantSucceeds(apiKeyService, new PersistedCloudCredential("minted-key-id", new SecureString("secret".toCharArray())));
+        mockGrantSucceeds(apiKeyService, new PersistedCloudCredential("minted-key-id", randomCloudCredentialEncryptedData()));
         stubGetDatafeedConfig(datafeedConfigProvider, storedConfig);
         stubUpdateDatefeedConfigCapturesUpdateAndInvokesMintHook(datafeedConfigProvider, storedConfig, capturedUpdate);
         doAnswer(invocation -> {
@@ -1624,7 +1625,7 @@ public class DatafeedManagerTests extends ESTestCase {
             mockAuditor()
         );
 
-        PersistedCloudCredential existingCred = new PersistedCloudCredential("old-key-id", new SecureString("e".toCharArray()));
+        PersistedCloudCredential existingCred = new PersistedCloudCredential("old-key-id", randomCloudCredentialEncryptedData());
         DatafeedConfig migratedConfig = new DatafeedConfig.Builder("df-4", "job-4").setIndices(List.of("logs-*"))
             .setCloudInternalCredential(existingCred)
             .build();
