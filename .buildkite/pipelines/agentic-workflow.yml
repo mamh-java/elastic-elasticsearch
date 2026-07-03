@@ -48,4 +48,10 @@ steps:
       automatic:
         - exit_status: "*"
           limit: 1
-    command: bash .buildkite/scripts/run-archimedes.sh
+    # Single entry point: `archimedes ci` owns the whole CI envelope — input
+    # validation, session download/upload (spot-preemption resume), the in-process
+    # sandbox, dispatch to the analyze/fix-pr/create workflow, and the start/finish
+    # progress annotations. It reads WORKFLOW/ISSUE_URL/PR_URL from the step env
+    # (set above), so no YAML interpolation is needed. This is all a consuming
+    # repo (e.g. elasticsearch-serverless) needs beyond bootstrapping archimedes.
+    command: archimedes ci

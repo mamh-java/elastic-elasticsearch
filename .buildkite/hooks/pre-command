@@ -111,7 +111,7 @@ if [[ "${USE_ARCHIMEDES:-}" == "true" ]]; then
   export PATH="${HOME}/.local/bin:${PATH}"
 
   # Bootstrap archimedes if not already cached on this agent.
-  ARCHIMEDES_TAG="${ARCHIMEDES_TAG:-archimedes-v0.9.0}"
+  ARCHIMEDES_TAG="${ARCHIMEDES_TAG:-archimedes-v0.9.2}"
   ARCHIMEDES_DIR="${HOME}/.local/archimedes"
 
   # gh_admin_token is SAML-authorized for the elastic org — used both to
@@ -173,9 +173,9 @@ if [[ "${USE_ARCHIMEDES:-}" == "true" ]]; then
   export GH_TOKEN="${GH_ADMIN_TOKEN}"
   unset GH_ADMIN_TOKEN
 
-  # No external nono CLI bootstrap needed: archimedes sandboxes itself
-  # in-process via the bundled nono-ts SDK (activated by ARCHIMEDES_SANDBOX=1 in
-  # run-archimedes.sh). This replaces the old `nono run` supervised wrapper, which
+  # No external nono CLI bootstrap needed: archimedes sandboxes itself in-process
+  # via the bundled nono-ts SDK. The `archimedes ci` entry point applies the
+  # sandbox automatically, replacing the old `nono run` supervised wrapper that
   # failed under Landlock with exit 127 when re-resolving the script interpreter.
 fi
 # ── end archimedes ────────────────────────────────────────────────────────────
