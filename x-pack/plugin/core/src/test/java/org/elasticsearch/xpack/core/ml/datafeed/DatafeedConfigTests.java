@@ -21,7 +21,6 @@ import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.Writeable;
-import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.CollectionUtils;
 import org.elasticsearch.common.xcontent.XContentHelper;
@@ -59,6 +58,7 @@ import org.elasticsearch.xpack.core.ml.job.messages.Messages;
 import org.elasticsearch.xpack.core.ml.utils.QueryProvider;
 import org.elasticsearch.xpack.core.ml.utils.ToXContentParams;
 import org.elasticsearch.xpack.core.security.authc.AuthenticationField;
+import org.elasticsearch.xpack.core.security.cloud.CloudCredentialTestUtils;
 import org.elasticsearch.xpack.core.security.cloud.CloudCredentialsExtension;
 import org.elasticsearch.xpack.core.security.cloud.PersistedCloudCredential;
 
@@ -75,6 +75,8 @@ import java.util.Map;
 import static org.elasticsearch.xpack.core.ml.datafeed.DatafeedConfigBuilderTests.createRandomizedDatafeedConfigBuilder;
 import static org.elasticsearch.xpack.core.ml.job.messages.Messages.DATAFEED_AGGREGATIONS_INTERVAL_MUST_BE_GREATER_THAN_ZERO;
 import static org.elasticsearch.xpack.core.ml.utils.QueryProviderTests.createTestQueryProvider;
+import static org.elasticsearch.xpack.core.security.cloud.CloudCredentialTestUtils.randomCloudCredentialEncryptedData;
+import static org.elasticsearch.xpack.core.security.cloud.CloudCredentialTestUtils.randomPersistedCloudCredential;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
@@ -1064,9 +1066,7 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
                 break;
             case 13:
                 if (instance.getCloudInternalCredential() == null) {
-                    builder.setCloudInternalCredential(
-                        new PersistedCloudCredential(randomAlphaOfLength(10), new SecureString(randomAlphaOfLength(20).toCharArray()))
-                    );
+                    builder.setCloudInternalCredential(randomPersistedCloudCredential());
                 } else {
                     builder.setCloudInternalCredential(null);
                 }
@@ -1511,7 +1511,7 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
     }
 
     public void testCloudInternalApiKeyPersistedForInternalStorage() throws IOException {
-        PersistedCloudCredential cred = new PersistedCloudCredential("key-id", new SecureString("secret-value".toCharArray()));
+        PersistedCloudCredential cred = randomPersistedCloudCredential();
         DatafeedConfig.Builder builder = new DatafeedConfig.Builder("test-datafeed", "test-job");
         builder.setIndices(List.of("logs-*"));
         builder.setCloudInternalCredential(cred);
@@ -1541,7 +1541,11 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
     }
 
     public void testCloudApiKeyIdVisibleOnPublicGet() throws IOException {
-        PersistedCloudCredential cred = new PersistedCloudCredential("key-id", new SecureString("secret-value".toCharArray()));
+
+        PersistedCloudCredential cred = new PersistedCloudCredential(
+            "key-id",
+            CloudCredentialTestUtils.randomCloudCredentialEncryptedData()
+        );
         DatafeedConfig uiamConfig = new DatafeedConfig.Builder("uiam-datafeed", "test-job").setIndices(List.of("logs-*"))
             .setCloudInternalCredential(cred)
             .build();
@@ -1558,7 +1562,7 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
         assertThat(cloudApiKey, notNullValue());
         assertThat(cloudApiKey.get("id"), equalTo("key-id"));
 
-        PersistedCloudCredential mintedCred = new PersistedCloudCredential("minted-id", new SecureString("secret-value".toCharArray()));
+        PersistedCloudCredential mintedCred = new PersistedCloudCredential("minted-id", randomCloudCredentialEncryptedData());
         Map<String, String> callerHeaders = Map.of(AuthenticationField.AUTHENTICATION_KEY, "encoded-auth");
         DatafeedConfig mintedWithCallerHeaders = new DatafeedConfig.Builder("minted-datafeed", "test-job").setIndices(List.of("logs-*"))
             .setHeaders(callerHeaders)
@@ -1595,7 +1599,7 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
     }
 
     public void testCloudInternalApiKeyCopyConstructor() {
-        PersistedCloudCredential cred = new PersistedCloudCredential("key-id", new SecureString("api-key-value".toCharArray()));
+        PersistedCloudCredential cred = randomPersistedCloudCredential();
         DatafeedConfig.Builder builder = new DatafeedConfig.Builder("test-datafeed", "test-job");
         builder.setIndices(List.of("logs-*"));
         builder.setCloudInternalCredential(cred);
@@ -1607,7 +1611,7 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
     }
 
     public void testCloudInternalApiKeySerialization() throws IOException {
-        PersistedCloudCredential cred = new PersistedCloudCredential("key-id", new SecureString("test-api-key-encoded".toCharArray()));
+        PersistedCloudCredential cred = randomPersistedCloudCredential();
         DatafeedConfig.Builder builder = new DatafeedConfig.Builder("test-datafeed", "test-job");
         builder.setIndices(List.of("logs-*"));
         builder.setCloudInternalCredential(cred);
@@ -1624,18 +1628,6 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
             assertThat(deserialized.getCloudInternalCredential(), equalTo(cred));
             assertEquals(config, deserialized);
         }
-    }
-
-    public void testCloseReleasesCloudInternalCredentialAndIsIdempotent() {
-        PersistedCloudCredential cred = new PersistedCloudCredential("key-id", new SecureString("secret".toCharArray()));
-        DatafeedConfig.Builder builder = new DatafeedConfig.Builder("test-datafeed", "test-job");
-        builder.setIndices(List.of("logs-*"));
-        builder.setCloudInternalCredential(cred);
-        DatafeedConfig config = builder.build();
-
-        config.close();
-        expectThrows(IllegalStateException.class, () -> cred.internalApiKey().length());
-        config.close();
     }
 
     private DatafeedConfig createDatafeedConfigFromString(String json) throws IOException {
