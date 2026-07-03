@@ -110,68 +110,29 @@ if [[ "${USE_ARCHIMEDES:-}" == "true" ]]; then
 
   export PATH="${HOME}/.local/bin:${PATH}"
 
-  # Bootstrap archimedes if not already cached on this agent.
-  ARCHIMEDES_TAG="${ARCHIMEDES_TAG:-archimedes-v0.9.2}"
-  ARCHIMEDES_DIR="${HOME}/.local/archimedes"
-
-  # gh_admin_token is SAML-authorized for the elastic org — used both to
-  # download the archimedes release from elastic/rene-bk-experiments and to
-  # write comments/labels on elastic/elasticsearch issues via gh.
+  # gh_admin_token is SAML-authorized for the elastic org. gh reads GH_TOKEN, so
+  # export it before bootstrapping: the installer uses gh to fetch the release,
+  # and archimedes uses gh at runtime for issue comment/edit.
   GH_ADMIN_TOKEN=$(vault_with_retry read -field=gh_admin_token secret/ci/elastic-elasticsearch/agentic-workflows)
-
-  if [[ ! -x "${ARCHIMEDES_DIR}/bin/archimedes.js" ]]; then
-    echo "--- Bootstrapping archimedes (${ARCHIMEDES_TAG})"
-
-    ARCHIMEDES_REPO="${ARCHIMEDES_REPO:-elastic/rene-bk-experiments}"
-
-    TMPDIR_DL="$(mktemp -d)"
-
-    # Resolve the pinned release's .tgz asset API URL. Capture the HTTP status
-    # so an auth/permission failure surfaces clearly instead of crashing the
-    # downstream JSON parse with an opaque "Unexpected end of JSON input".
-    ARCHIMEDES_RELEASE_API="https://api.github.com/repos/${ARCHIMEDES_REPO}/releases/tags/${ARCHIMEDES_TAG}"
-    ARCHIMEDES_RELEASE_HTTP=$(curl -sSL -w '%{http_code}' -o "${TMPDIR_DL}/release.json" \
-      -H "Authorization: Bearer ${GH_ADMIN_TOKEN}" \
-      "${ARCHIMEDES_RELEASE_API}")
-    if [[ "${ARCHIMEDES_RELEASE_HTTP}" != "200" ]]; then
-      echo "Failed to fetch archimedes release ${ARCHIMEDES_TAG} from ${ARCHIMEDES_REPO}" >&2
-      echo "  GET ${ARCHIMEDES_RELEASE_API} -> HTTP ${ARCHIMEDES_RELEASE_HTTP}" >&2
-      echo "  Response body:" >&2
-      cat "${TMPDIR_DL}/release.json" >&2 || true
-      rm -rf "${TMPDIR_DL}"
-      exit 1
-    fi
-
-    ARCHIMEDES_TARBALL_URL=$(node -e "
-        const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
-        const a = (r.assets || []).find(a => a.name.endsWith('.tgz') && !a.name.includes('sha256'));
-        if (!a) { process.stderr.write('No .tgz asset found in release\n'); process.exit(1); }
-        process.stdout.write(a.url);
-      " "${TMPDIR_DL}/release.json")
-    curl -fsSL \
-      -H "Authorization: Bearer ${GH_ADMIN_TOKEN}" \
-      -H "Accept: application/octet-stream" \
-      "${ARCHIMEDES_TARBALL_URL}" \
-      -o "${TMPDIR_DL}/archimedes.tgz"
-
-    rm -rf "${ARCHIMEDES_DIR}"
-    mkdir -p "${ARCHIMEDES_DIR}"
-    tar -xzf "${TMPDIR_DL}/archimedes.tgz" -C "${ARCHIMEDES_DIR}" --strip-components=1
-
-    # Install the bundled pi SDK dependency.
-    npm install --prefix "${ARCHIMEDES_DIR}" --omit=dev --no-audit --no-fund --silent
-
-    mkdir -p "${HOME}/.local/bin"
-    ln -sf "${ARCHIMEDES_DIR}/bin/archimedes.js" "${HOME}/.local/bin/archimedes"
-    chmod +x "${ARCHIMEDES_DIR}/bin/archimedes.js"
-    rm -rf "${TMPDIR_DL}"
-  fi
-
-  # Override GH_TOKEN with the admin token so archimedes can post comments and
-  # apply labels on elastic/elasticsearch issues via `gh issue comment` and
-  # `gh issue edit`.
   export GH_TOKEN="${GH_ADMIN_TOKEN}"
   unset GH_ADMIN_TOKEN
+
+  # Bootstrap archimedes (once per agent). The installer downloads the LATEST
+  # archimedes release, verifies its checksum, installs deps, and symlinks
+  # ~/.local/bin/archimedes. Tracking "latest" means no per-release tag bump
+  # here — a new archimedes release is picked up automatically on the next fresh
+  # agent. The installer script itself is pulled from the archimedes source ref
+  # (ARCHIMEDES_REF) until packages/archimedes lands on the default branch.
+  if ! command -v archimedes >/dev/null 2>&1; then
+    echo "--- Bootstrapping archimedes (latest release)"
+    ARCHIMEDES_REPO="${ARCHIMEDES_REPO:-elastic/rene-bk-experiments}"
+    ARCHIMEDES_REF="${ARCHIMEDES_REF:-bk-baked-agentic-workflows}"
+    if ! gh api "repos/${ARCHIMEDES_REPO}/contents/packages/archimedes/bootstrap.sh?ref=${ARCHIMEDES_REF}" \
+           -H "Accept: application/vnd.github.raw+json" | bash -s; then
+      echo "archimedes bootstrap failed" >&2
+      exit 1
+    fi
+  fi
 
   # No external nono CLI bootstrap needed: archimedes sandboxes itself in-process
   # via the bundled nono-ts SDK. The `archimedes ci` entry point applies the
