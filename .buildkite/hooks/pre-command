@@ -125,9 +125,9 @@ if [[ "${USE_ARCHIMEDES:-}" == "true" ]]; then
   # (ARCHIMEDES_REF) until packages/archimedes lands on the default branch.
   if ! command -v archimedes >/dev/null 2>&1; then
     echo "--- Bootstrapping archimedes (latest release)"
-    ARCHIMEDES_REPO="${ARCHIMEDES_REPO:-elastic/rene-bk-experiments}"
-    ARCHIMEDES_REF="${ARCHIMEDES_REF:-bk-baked-agentic-workflows}"
-    if ! gh api "repos/${ARCHIMEDES_REPO}/contents/packages/archimedes/bootstrap.sh?ref=${ARCHIMEDES_REF}" \
+    ARCHIMEDES_REPO="${ARCHIMEDES_REPO:-elastic/elasticsearch-infra}"
+    ARCHIMEDES_REF="${ARCHIMEDES_REF:-add-archimedes}"
+    if ! gh api "repos/${ARCHIMEDES_REPO}/contents/archimedes/bootstrap.sh?ref=${ARCHIMEDES_REF}" \
            -H "Accept: application/vnd.github.raw+json" | bash -s; then
       echo "archimedes bootstrap failed" >&2
       exit 1
