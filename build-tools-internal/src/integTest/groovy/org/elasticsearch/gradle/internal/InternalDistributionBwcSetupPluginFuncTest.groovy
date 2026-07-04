@@ -51,18 +51,25 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
 
     def "builds distribution from branches via archives extractedAssemble"() {
         given:
+        File rootWrapperDir = new File(System.getProperty('user.home') + ".gradle/wrapper")
+        File targetWrapper = new File(System.getProperty('user.home') + ".gradle-" + bwcProject)
+        if (rootWrapperDir.exists()) {
+            org.apache.commons.io.FileUtils.copyDirectory(rootWrapperDir, targetWrapper);
+        }
         buildFile.text = ""
         internalBuild()
         buildFile << """
             apply plugin: 'elasticsearch.internal-distribution-bwc-setup'
         """
         when:
-        def result = gradleRunner(":distribution:bwc:${bwcProject}:buildBwcDarwinTar",
-                ":distribution:bwc:${bwcProject}:buildBwcDarwinTar",
-                "-DtestRemoteRepo=" + remoteGitRepo,
-                "-Dbwc.remote=origin",
-                "-Dbwc.dist.version=${bwcDistVersion}-SNAPSHOT")
-                .build()
+        def result = gradleRunner(
+            ":distribution:bwc:${bwcProject}:buildBwcDarwinTar",
+            ":distribution:bwc:${bwcProject}:buildBwcDarwinTar",
+            "-DtestRemoteRepo=" + remoteGitRepo,
+            "-Dbwc.remote=origin",
+            "-Dbwc.dist.version=${bwcDistVersion}-SNAPSHOT"
+        )
+            .build()
         then:
         result.task(":distribution:bwc:${bwcProject}:buildBwcDarwinTar").outcome == TaskOutcome.SUCCESS
 
@@ -80,11 +87,13 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
     @Unroll
     def "supports #platform aarch distributions"() {
         when:
-        def result = gradleRunner(":distribution:bwc:major1:buildBwc${platform.capitalize()}Aarch64Tar",
-                "-DtestRemoteRepo=" + remoteGitRepo,
-                "-Dbwc.remote=origin",
-                "-Dbwc.dist.version=${bwcDistVersion}-SNAPSHOT")
-                .build()
+        def result = gradleRunner(
+            ":distribution:bwc:major1:buildBwc${platform.capitalize()}Aarch64Tar",
+            "-DtestRemoteRepo=" + remoteGitRepo,
+            "-Dbwc.remote=origin",
+            "-Dbwc.dist.version=${bwcDistVersion}-SNAPSHOT"
+        )
+            .build()
         then:
         result.task(":distribution:bwc:major1:buildBwc${platform.capitalize()}Aarch64Tar").outcome == TaskOutcome.SUCCESS
 
@@ -93,8 +102,8 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
 
         where:
         bwcDistVersion | platform
-        "8.4.0"       | "darwin"
-        "8.4.0"       | "linux"
+        "8.4.0"        | "darwin"
+        "8.4.0"        | "linux"
     }
 
     def "downloads distribution from DRA snapshot when mode=dra and hash override is set"() {
@@ -127,9 +136,11 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
         result.output.contains("DRA snapshot ${buildId}")
 
         and: "the distribution directory was created at the expected path"
-        file("cloned/distribution/bwc/major1/build/bwc/checkout-${bwcBranch}/" +
-            "distribution/archives/darwin-tar/build/install/" +
-            "elasticsearch-${bwcVersion}-SNAPSHOT").exists()
+        file(
+            "cloned/distribution/bwc/major1/build/bwc/checkout-${bwcBranch}/" +
+                "distribution/archives/darwin-tar/build/install/" +
+                "elasticsearch-${bwcVersion}-SNAPSHOT"
+        ).exists()
     }
 
     def "resolveByLatest falls back to origin remote when configured remote ref is absent (CI scenario)"() {
@@ -203,17 +214,21 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
         result.output.contains("DRA snapshot ${buildId}")
 
         and: "the JDBC jar was created at the expected path"
-        file("cloned/distribution/bwc/major1/build/bwc/checkout-${bwcBranch}/" +
-            "x-pack/plugin/sql/jdbc/build/distributions/" +
-            "x-pack-sql-jdbc-${bwcVersion}-SNAPSHOT.jar").exists()
+        file(
+            "cloned/distribution/bwc/major1/build/bwc/checkout-${bwcBranch}/" +
+                "x-pack/plugin/sql/jdbc/build/distributions/" +
+                "x-pack-sql-jdbc-${bwcVersion}-SNAPSHOT.jar"
+        ).exists()
     }
 
     def "builds from source when mode is gradle (default)"() {
         when:
-        def result = gradleRunner(":distribution:bwc:major1:buildBwcDarwinTar",
+        def result = gradleRunner(
+            ":distribution:bwc:major1:buildBwcDarwinTar",
             "-DtestRemoteRepo=" + remoteGitRepo,
             "-Dbwc.remote=origin",
-            "-Dbwc.dist.version=8.4.0-SNAPSHOT")
+            "-Dbwc.dist.version=8.4.0-SNAPSHOT"
+        )
             .build()
         then:
         result.task(":distribution:bwc:major1:buildBwcDarwinTar").outcome == TaskOutcome.SUCCESS
@@ -351,9 +366,11 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
         result.output.contains("DRA snapshot ${buildId}")
 
         and: "the distribution directory was created at the expected path"
-        file("cloned/distribution/bwc/major1/build/bwc/checkout-${bwcBranch}/" +
-            "distribution/archives/darwin-tar/build/install/" +
-            "elasticsearch-${bwcVersion}-SNAPSHOT").exists()
+        file(
+            "cloned/distribution/bwc/major1/build/bwc/checkout-${bwcBranch}/" +
+                "distribution/archives/darwin-tar/build/install/" +
+                "elasticsearch-${bwcVersion}-SNAPSHOT"
+        ).exists()
     }
 
     def "falls back to source build with warning when mode=dra but DRA snapshot is unavailable (distribution archive)"() {
@@ -406,19 +423,25 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
         }
         """
         when:
-        def result = gradleRunner(":resolveExpandedDistribution",
-                "-DtestRemoteRepo=" + remoteGitRepo,
-                "-Dbwc.remote=origin")
-                .build()
+        def result = gradleRunner(
+            ":resolveExpandedDistribution",
+            "-DtestRemoteRepo=" + remoteGitRepo,
+            "-Dbwc.remote=origin"
+        )
+            .build()
         then:
         result.task(":resolveExpandedDistribution").outcome == TaskOutcome.SUCCESS
         result.task(":distribution:bwc:major1:buildBwcDarwinTar").outcome == TaskOutcome.SUCCESS
         and: "assemble task triggered"
         result.output.contains("[8.4.0] > Task :distribution:archives:darwin-tar:extractedAssemble")
-        result.output.contains("expandedRootPath /distribution/bwc/major1/build/bwc/checkout-8.x/" +
-                        "distribution/archives/darwin-tar/build/install")
-        result.output.contains("nested folder /distribution/bwc/major1/build/bwc/checkout-8.x/" +
-                        "distribution/archives/darwin-tar/build/install/elasticsearch-8.4.0-SNAPSHOT")
+        result.output.contains(
+            "expandedRootPath /distribution/bwc/major1/build/bwc/checkout-8.x/" +
+                "distribution/archives/darwin-tar/build/install"
+        )
+        result.output.contains(
+            "nested folder /distribution/bwc/major1/build/bwc/checkout-8.x/" +
+                "distribution/archives/darwin-tar/build/install/elasticsearch-8.4.0-SNAPSHOT"
+        )
     }
 
     // -------------------------------------------------------------------------
@@ -472,9 +495,13 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
     /** Stubs HEAD+GET for a manifest path, returning HTTP 200 with the given commit hash in the body. */
     private static void stubManifestWithCommit(WireMockServer wireMock, String path, String commitHash) {
         wireMock.stubFor(head(urlEqualTo(path)).willReturn(aResponse().withStatus(200)))
-        wireMock.stubFor(get(urlEqualTo(path))
-            .willReturn(aResponse().withStatus(200)
-                .withBody("""{"projects": {"elasticsearch": {"commit_hash": "${commitHash}"}}}""")))
+        wireMock.stubFor(
+            get(urlEqualTo(path))
+                .willReturn(
+                    aResponse().withStatus(200)
+                        .withBody("""{"projects": {"elasticsearch": {"commit_hash": "${commitHash}"}}}""")
+                )
+        )
     }
 
     /** Stubs HEAD+GET for a manifest path to return HTTP 404, triggering source-build fallback. */
@@ -485,22 +512,28 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
 
     /** Stubs GET for the DRA "latest" endpoint, returning a JSON body with the given build ID. */
     private static void stubLatest(WireMockServer wireMock, String path, String buildId) {
-        wireMock.stubFor(get(urlEqualTo(path))
-            .willReturn(aResponse().withStatus(200).withBody("""{"build_id": "${buildId}"}""")))
+        wireMock.stubFor(
+            get(urlEqualTo(path))
+                .willReturn(aResponse().withStatus(200).withBody("""{"build_id": "${buildId}"}"""))
+        )
     }
 
     /** Stubs HEAD+GET for a distribution tar.gz artifact path, serving a minimal extractable archive. */
     private static void stubTarArtifact(WireMockServer wireMock, String path, String bwcVersion) {
         wireMock.stubFor(head(urlEqualTo(path)).willReturn(aResponse().withStatus(200)))
-        wireMock.stubFor(get(urlEqualTo(path))
-            .willReturn(aResponse().withStatus(200).withBody(minimalElasticsearchTarGz("${bwcVersion}-SNAPSHOT"))))
+        wireMock.stubFor(
+            get(urlEqualTo(path))
+                .willReturn(aResponse().withStatus(200).withBody(minimalElasticsearchTarGz("${bwcVersion}-SNAPSHOT")))
+        )
     }
 
     /** Stubs HEAD+GET for a Maven JAR artifact path, serving a minimal fake JAR body. */
     private static void stubJarArtifact(WireMockServer wireMock, String path, byte[] content = "fake-jar-content".bytes) {
         wireMock.stubFor(head(urlEqualTo(path)).willReturn(aResponse().withStatus(200)))
-        wireMock.stubFor(get(urlEqualTo(path))
-            .willReturn(aResponse().withStatus(200).withBody(content)))
+        wireMock.stubFor(
+            get(urlEqualTo(path))
+                .willReturn(aResponse().withStatus(200).withBody(content))
+        )
     }
 
     // -------------------------------------------------------------------------

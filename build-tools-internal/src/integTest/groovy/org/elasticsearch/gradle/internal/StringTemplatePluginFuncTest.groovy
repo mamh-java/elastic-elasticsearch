@@ -10,11 +10,15 @@
 package org.elasticsearch.gradle.internal;
 
 import org.elasticsearch.gradle.fixtures.AbstractGradleInternalPluginFuncTest;
+import spock.lang.TempDir;
 import org.gradle.testkit.runner.TaskOutcome;
 
 class StringTemplatePluginFuncTest extends AbstractGradleInternalPluginFuncTest {
 
     Class<? extends org.gradle.api.Plugin> pluginClassUnderTest = org.elasticsearch.gradle.internal.StringTemplatePlugin
+
+    @TempDir
+    File gradleUserHome
 
     
     def setup() {
