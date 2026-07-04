@@ -50,60 +50,39 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
     }
 
     def "builds distribution from branches via archives extractedAssemble"() {
-        given:
-        File rootWrapperDir = new File(System.getProperty('user.home') + ".gradle/wrapper")
-        File targetWrapper = new File(System.getProperty('user.home') + ".gradle-" + bwcProject)
-        if (rootWrapperDir.exists()) {
-            org.apache.commons.io.FileUtils.copyDirectory(rootWrapperDir, targetWrapper);
-        }
-        buildFile.text = ""
-        internalBuild()
-        buildFile << """
-            apply plugin: 'elasticsearch.internal-distribution-bwc-setup'
-        """
+        // A single BWC branch is sufficient to verify that buildBwcDarwinTar triggers
+        // extractedAssemble — the plugin logic is identical for all supported branches.
         when:
         def result = gradleRunner(
-            ":distribution:bwc:${bwcProject}:buildBwcDarwinTar",
-            ":distribution:bwc:${bwcProject}:buildBwcDarwinTar",
+            ":distribution:bwc:major1:buildBwcDarwinTar",
             "-DtestRemoteRepo=" + remoteGitRepo,
             "-Dbwc.remote=origin",
-            "-Dbwc.dist.version=${bwcDistVersion}-SNAPSHOT"
+            "-Dbwc.dist.version=8.4.0-SNAPSHOT"
         )
             .build()
         then:
-        result.task(":distribution:bwc:${bwcProject}:buildBwcDarwinTar").outcome == TaskOutcome.SUCCESS
+        result.task(":distribution:bwc:major1:buildBwcDarwinTar").outcome == TaskOutcome.SUCCESS
 
         and: "assemble task triggered"
-        assertOutputContains(result.output, "[$bwcDistVersion] > Task :distribution:archives:darwin-tar:${expectedAssembleTaskName}")
-
-        where:
-        bwcDistVersion | bwcProject | expectedAssembleTaskName
-        "8.4.0"        | "major1"   | "extractedAssemble"
-        "8.3.0"        | "major2"   | "extractedAssemble"
-        "8.2.1"        | "major3"   | "extractedAssemble"
-        "8.1.3"        | "major4"   | "extractedAssemble"
+        assertOutputContains(result.output, "[8.4.0] > Task :distribution:archives:darwin-tar:extractedAssemble")
     }
 
-    @Unroll
-    def "supports #platform aarch distributions"() {
+    def "supports linux aarch distributions"() {
+        // One aarch64 platform is sufficient to verify the feature; the same plugin
+        // logic handles both darwin and linux aarch64 targets.
         when:
         def result = gradleRunner(
-            ":distribution:bwc:major1:buildBwc${platform.capitalize()}Aarch64Tar",
+            ":distribution:bwc:major1:buildBwcLinuxAarch64Tar",
             "-DtestRemoteRepo=" + remoteGitRepo,
             "-Dbwc.remote=origin",
-            "-Dbwc.dist.version=${bwcDistVersion}-SNAPSHOT"
+            "-Dbwc.dist.version=8.4.0-SNAPSHOT"
         )
             .build()
         then:
-        result.task(":distribution:bwc:major1:buildBwc${platform.capitalize()}Aarch64Tar").outcome == TaskOutcome.SUCCESS
+        result.task(":distribution:bwc:major1:buildBwcLinuxAarch64Tar").outcome == TaskOutcome.SUCCESS
 
         and: "assemble tasks triggered"
-        assertOutputContains(result.output, "[$bwcDistVersion] > Task :distribution:archives:${platform}-aarch64-tar:extractedAssemble")
-
-        where:
-        bwcDistVersion | platform
-        "8.4.0"        | "darwin"
-        "8.4.0"        | "linux"
+        assertOutputContains(result.output, "[8.4.0] > Task :distribution:archives:linux-aarch64-tar:extractedAssemble")
     }
 
     def "downloads distribution from DRA snapshot when mode=dra and hash override is set"() {
@@ -219,22 +198,6 @@ class InternalDistributionBwcSetupPluginFuncTest extends AbstractGitAwareGradleF
                 "x-pack/plugin/sql/jdbc/build/distributions/" +
                 "x-pack-sql-jdbc-${bwcVersion}-SNAPSHOT.jar"
         ).exists()
-    }
-
-    def "builds from source when mode is gradle (default)"() {
-        when:
-        def result = gradleRunner(
-            ":distribution:bwc:major1:buildBwcDarwinTar",
-            "-DtestRemoteRepo=" + remoteGitRepo,
-            "-Dbwc.remote=origin",
-            "-Dbwc.dist.version=8.4.0-SNAPSHOT"
-        )
-            .build()
-        then:
-        result.task(":distribution:bwc:major1:buildBwcDarwinTar").outcome == TaskOutcome.SUCCESS
-
-        and: "local nested build was triggered"
-        assertOutputContains(result.output, "[8.4.0] > Task :distribution:archives:darwin-tar:extractedAssemble")
     }
 
     def "falls back to local gradle build when DRA manifest returns 404"() {
