@@ -11,7 +11,6 @@ package org.elasticsearch.gradle.internal.foreign
 
 import org.elasticsearch.gradle.fixtures.AbstractGradleInternalPluginFuncTest
 import org.gradle.testkit.runner.TaskOutcome
-import spock.lang.TempDir
 
 /**
  * Exercises the plugin's wiring in a real Gradle invocation. Validation of the actual processor's

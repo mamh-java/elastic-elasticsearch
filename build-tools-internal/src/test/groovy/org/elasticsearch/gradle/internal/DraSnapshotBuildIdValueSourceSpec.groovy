@@ -158,13 +158,30 @@ class DraSnapshotBuildIdValueSourceSpec extends Specification {
         ) == ""
     }
 
-    def "resolveByLatest falls back to origin ref when the configured remote has no ref for the branch"() {
+    def "resolveByLatest uses origin ref when it is present regardless of the configured remote"() {
+        // origin is always checked first; the configured remote is never consulted when origin has the ref.
         given:
         def hash = "c" * 40
-        writeRemoteRef("origin", "8.x", hash)   // only origin, not 'elastic'
+        writeRemoteRef("origin", "8.x", hash)   // only origin — 'elastic' ref intentionally absent
         stubGet("/elasticsearch/latest/8.x.json", 200, '{"build_id": "8.4.0-abc12345"}')
         stubGet("/elasticsearch/8.4.0-abc12345/manifest-8.4.0-SNAPSHOT.json", 200,
             """{"projects": {"elasticsearch": {"commit_hash": "${hash}"}}}""")
+
+        expect:
+        DraSnapshotBuildIdValueSource.resolveByLatest(
+            httpClient, mapper, baseUrl, "8.4.0", "8.x", repoDir, "elastic"
+        ) == "8.4.0-abc12345"
+    }
+
+    def "resolveByLatest uses configured remote ref when origin has no ref for the branch"() {
+        // Tests the true fallback path: origin ref absent, configured remote ref present.
+        given:
+        def hash = "e" * 40
+        writeRemoteRef("elastic", "8.x", hash)   // only 'elastic', not origin
+        stubGet("/elasticsearch/latest/8.x.json", 200, '{"build_id": "8.4.0-abc12345"}')
+        stubGet("/elasticsearch/8.4.0-abc12345/manifest-8.4.0-SNAPSHOT.json", 200,
+            """{\"projects\": {\"elasticsearch\": {\"commit_hash\": \"${hash}\"}}}"""
+        )
 
         expect:
         DraSnapshotBuildIdValueSource.resolveByLatest(
