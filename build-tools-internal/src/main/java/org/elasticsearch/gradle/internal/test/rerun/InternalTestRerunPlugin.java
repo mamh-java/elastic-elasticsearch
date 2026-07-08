@@ -87,12 +87,15 @@ public abstract class InternalTestRerunPlugin implements Plugin<Project> {
         if (service.markForceRunResolved() == false) {
             return;
         }
+        // getAllTasks() is the set of tasks that will actually run; getDependencies(task) may return tasks that exist
+        // but are not scheduled, and calling getDependencies on such a task throws, so we only traverse scheduled tasks.
+        Set<Task> scheduledTasks = new HashSet<>(graph.getAllTasks());
         Set<String> forceRun = new HashSet<>();
         Set<Task> visited = new HashSet<>();
-        for (Task task : graph.getAllTasks()) {
+        for (Task task : scheduledTasks) {
             boolean willBeSkipped = task instanceof Test && service.wasTaskSuccessful(task.getPath());
             if (willBeSkipped == false) {
-                collectSuccessfulDependencies(graph, task, service, forceRun, visited);
+                collectSuccessfulDependencies(graph, task, service, forceRun, visited, scheduledTasks);
             }
         }
         service.setForceRunTasks(forceRun);
@@ -103,16 +106,19 @@ public abstract class InternalTestRerunPlugin implements Plugin<Project> {
         Task task,
         RetryTestsBuildService service,
         Set<String> forceRun,
-        Set<Task> visited
+        Set<Task> visited,
+        Set<Task> scheduledTasks
     ) {
         for (Task dependency : graph.getDependencies(task)) {
-            if (visited.add(dependency) == false) {
+            // A dependency may exist without being scheduled to run; it cannot cause a skipped task to run and
+            // querying its own dependencies would throw, so ignore it.
+            if (scheduledTasks.contains(dependency) == false || visited.add(dependency) == false) {
                 continue;
             }
             if (dependency instanceof Test && service.wasTaskSuccessful(dependency.getPath())) {
                 forceRun.add(dependency.getPath());
             }
-            collectSuccessfulDependencies(graph, dependency, service, forceRun, visited);
+            collectSuccessfulDependencies(graph, dependency, service, forceRun, visited, scheduledTasks);
         }
     }
 

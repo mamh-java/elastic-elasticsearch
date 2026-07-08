@@ -267,6 +267,23 @@ class InternalTestRerunPluginFuncTest extends AbstractGradleFuncTest {
         result.task(":libc:test").outcome == TaskOutcome.SUCCESS
     }
 
+    def "handles a dependency that exists but is not scheduled to run"() {
+        given:
+        // :downstream:test dependsOn :upstream:test. Excluding the dependency with -x removes it from the
+        // execution plan while leaving it in the dependent task's declared dependencies, so force-run
+        // resolution encounters a dependency it must not try to traverse.
+        chainedTestSetup([":upstream", ":downstream"])
+        writeHistory([":upstream:test"], [:])
+
+        when:
+        def result = gradleRunner(":downstream:test", "-x", ":upstream:test", "--warning-mode", "all").build()
+
+        then:
+        // The build must not fail resolving the task graph; the dependent runs and the excluded task does not.
+        result.task(":downstream:test").outcome == TaskOutcome.SUCCESS
+        result.task(":upstream:test") == null
+    }
+
     boolean testExecuted(String output, String testReference) {
         output.contains(testReference + " STARTED")
     }
