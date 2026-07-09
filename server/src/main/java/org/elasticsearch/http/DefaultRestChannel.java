@@ -97,7 +97,6 @@ public class DefaultRestChannel extends AbstractRestChannel {
         }
         toClose.add(() -> tracer.stopTrace(request));
         toClose.add(restResponse);
-        toClose.add(httpRequest::releaseRequestScopedResources);
 
         boolean success = false;
         String opaque = null;
