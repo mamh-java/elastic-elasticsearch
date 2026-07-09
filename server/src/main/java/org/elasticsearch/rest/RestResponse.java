@@ -60,7 +60,7 @@ public final class RestResponse implements Releasable {
     private Map<String, List<String>> customHeaders;
 
     @Nullable
-    private final Releasable releasable;
+    private Releasable releasable;
 
     /**
      * Creates a new response based on {@link XContentBuilder}.
@@ -233,6 +233,10 @@ public final class RestResponse implements Releasable {
             customHeaders = Maps.newMapWithExpectedSize(2);
         }
         customHeaders.computeIfAbsent(name, k -> new ArrayList<>()).add(value);
+    }
+
+    public void addReleasable(Releasable toRelease) {
+        this.releasable = this.releasable == null ? toRelease : Releasables.wrap(this.releasable, toRelease);
     }
 
     /**
