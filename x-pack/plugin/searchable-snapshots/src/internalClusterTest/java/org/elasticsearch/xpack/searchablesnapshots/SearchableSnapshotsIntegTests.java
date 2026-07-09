@@ -688,8 +688,6 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
 
     public void testSnapshotMountedIndexWithTimestampsRecordsTimestampRangeInIndexMetadata() throws Exception {
 
-        assumeTrue("Skipper feature flag disabled", IndexSettings.DOC_VALUES_SKIPPER);
-
         final String indexName = randomAlphaOfLength(10).toLowerCase(Locale.ROOT);
         int numShards = between(1, 3);
 
@@ -717,7 +715,10 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
                         .endObject()
                         .endObject()
                 )
-                .setSettings(indexSettingsNoReplicas(numShards).put(INDEX_SOFT_DELETES_SETTING.getKey(), true))
+                .setSettings(
+                    indexSettingsNoReplicas(numShards).put(INDEX_SOFT_DELETES_SETTING.getKey(), true)
+                        .put(IndexSettings.USE_DOC_VALUES_SKIPPER.getKey(), true)
+                )
         );
         ensureGreen(indexName);
 
@@ -1033,7 +1034,7 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
 
         assertBusy(() -> {
             final var clusterAllocationExplanation = getClusterAllocationExplanation(client(), restoredIndexName, 0, true);
-            final String description = Strings.toString(clusterAllocationExplanation);
+            final String description = Strings.toTruncatedString(clusterAllocationExplanation);
             final AllocateUnassignedDecision allocateDecision = clusterAllocationExplanation.getShardAllocationDecision()
                 .getAllocateDecision();
             assertTrue(description, allocateDecision.isDecisionTaken());
@@ -1056,7 +1057,7 @@ public class SearchableSnapshotsIntegTests extends BaseSearchableSnapshotsIntegT
             final RestoreInProgress restoreInProgress = RestoreInProgress.get(
                 clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).clear().setCustoms(true).get().getState()
             );
-            assertTrue(Strings.toString(restoreInProgress, true, true), restoreInProgress.isEmpty());
+            assertTrue(Strings.toTruncatedString(restoreInProgress, true, true), restoreInProgress.isEmpty());
         });
 
         // Re-register the repository containing the actual data & verify that the shards are now allocated

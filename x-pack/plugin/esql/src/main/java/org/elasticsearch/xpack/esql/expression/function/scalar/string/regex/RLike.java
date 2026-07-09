@@ -33,6 +33,7 @@ public class RLike extends RegexMatch<RLikePattern> {
 
     @FunctionInfo(
         returnType = "boolean",
+        briefSummary = "Filters data based on string patterns using regular expressions.",
         description = """
             Use `RLIKE` to filter data based on string patterns using
             <<regexp-syntax,regular expressions>>. `RLIKE` usually acts on a field placed on
@@ -41,6 +42,10 @@ public class RLike extends RegexMatch<RLikePattern> {
 
         // we use an inline example here because ?pattern not supported in csv-spec test
         detailedDescription = """
+            When used on `text` fields, `RLIKE` treats the field as a `keyword` and does not use the analyzer.
+            This means the pattern matching is case-sensitive and must match the exact string indexed.
+            To perform full-text search, use the `MATCH` or `QSTR` functions.
+
             Matching special characters (eg. `.`, `*`, `(`...) will require escaping.
             The escape character is backslash `\\`. Since also backslash is a special character in string literals,
             it will require further escaping.

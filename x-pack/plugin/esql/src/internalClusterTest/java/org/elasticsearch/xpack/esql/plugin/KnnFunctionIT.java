@@ -15,7 +15,6 @@ import org.elasticsearch.client.internal.IndicesAdminClient;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.IndexSettings;
-import org.elasticsearch.index.codec.vectors.es93.ES93GenericFlatVectorsFormat;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentFactory;
@@ -58,9 +57,7 @@ public class KnnFunctionIT extends AbstractEsqlIntegTestCase {
         List<Object[]> params = new ArrayList<>();
         for (String indexType : ALL_DENSE_VECTOR_INDEX_TYPES) {
             params.add(new Object[] { DenseVectorFieldMapper.ElementType.FLOAT, indexType });
-            if (ES93GenericFlatVectorsFormat.GENERIC_VECTOR_FORMAT.isEnabled()) {
-                params.add(new Object[] { DenseVectorFieldMapper.ElementType.BFLOAT16, indexType });
-            }
+            params.add(new Object[] { DenseVectorFieldMapper.ElementType.BFLOAT16, indexType });
         }
         for (String indexType : NON_QUANTIZED_DENSE_VECTOR_INDEX_TYPES) {
             params.add(new Object[] { DenseVectorFieldMapper.ElementType.BYTE, indexType });
@@ -207,6 +204,43 @@ public class KnnFunctionIT extends AbstractEsqlIntegTestCase {
             // K = 5, 1 more for every id > 10
             assertEquals(5, valuesList.size());
         }
+    }
+
+    public void testKnnAfterMvExpand() {
+        float[] queryVector = new float[numDims];
+        Arrays.fill(queryVector, 0.0f);
+
+        var query = String.format(Locale.ROOT, """
+            FROM test
+            | MV_EXPAND id
+            | WHERE KNN(vector, %s)
+            """, Arrays.toString(queryVector));
+
+        var error = expectThrows(VerificationException.class, () -> run(query));
+        assertThat(error.getMessage(), containsString("[KNN] function cannot be used after MV_EXPAND"));
+    }
+
+    public void testKnnAfterMvExpandWithIntermediateCommands() {
+        float[] queryVector = new float[numDims];
+        Arrays.fill(queryVector, 0.0f);
+        String vectorStr = Arrays.toString(queryVector);
+
+        var error = expectThrows(VerificationException.class, () -> run(String.format(Locale.ROOT, """
+            FROM test
+            | MV_EXPAND id
+            | EVAL x = id + 1
+            | WHERE KNN(vector, %s)
+            """, vectorStr)));
+        assertThat(error.getMessage(), containsString("[KNN] function cannot be used after MV_EXPAND"));
+
+        error = expectThrows(VerificationException.class, () -> run(String.format(Locale.ROOT, """
+            FROM test
+            | MV_EXPAND id
+            | SORT id
+            | KEEP id, vector
+            | WHERE KNN(vector, %s)
+            """, vectorStr)));
+        assertThat(error.getMessage(), containsString("[KNN] function cannot be used after MV_EXPAND"));
     }
 
     public void testKnnWithLookupJoin() {

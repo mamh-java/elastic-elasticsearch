@@ -8,7 +8,6 @@
 package org.elasticsearch.xpack.sql.plugin;
 
 import org.elasticsearch.client.internal.node.NodeClient;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
 import org.elasticsearch.rest.BaseRestHandler;
@@ -39,8 +38,8 @@ public class RestSqlQueryAction extends BaseRestHandler {
 
     private final CrossProjectModeDecider crossProjectModeDecider;
 
-    public RestSqlQueryAction(Settings settings) {
-        crossProjectModeDecider = new CrossProjectModeDecider(settings);
+    public RestSqlQueryAction(CrossProjectModeDecider crossProjectModeDecider) {
+        this.crossProjectModeDecider = crossProjectModeDecider;
     }
 
     @Override
@@ -56,11 +55,6 @@ public class RestSqlQueryAction extends BaseRestHandler {
             sqlRequest = SqlQueryRequest.fromXContent(parser);
         }
 
-        String routingParam = request.param("project_routing");
-        if (routingParam != null) {
-            // takes precedence on the parameter in the body
-            sqlRequest.projectRouting(routingParam);
-        }
         if (sqlRequest.projectRouting() != null && crossProjectModeDecider.crossProjectEnabled() == false) {
             throw new InvalidArgumentException("[project_routing] is only allowed when cross-project search is enabled");
         }

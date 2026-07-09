@@ -14,11 +14,11 @@ import org.apache.lucene.document.FeatureField;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
@@ -27,7 +27,6 @@ import org.apache.lucene.search.join.QueryBitSetProducer;
 import org.apache.lucene.search.join.ScoreMode;
 import org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest;
 import org.elasticsearch.action.support.PlainActionFuture;
-import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.CheckedBiConsumer;
 import org.elasticsearch.common.CheckedBiFunction;
@@ -37,6 +36,10 @@ import org.elasticsearch.common.compress.CompressedXContent;
 import org.elasticsearch.common.lucene.search.Queries;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.CheckedConsumer;
+import org.elasticsearch.core.CheckedRunnable;
+import org.elasticsearch.core.Nullable;
+import org.elasticsearch.index.IndexMode;
+import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.IndexVersions;
 import org.elasticsearch.index.mapper.DocumentMapper;
@@ -50,13 +53,15 @@ import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.Mapper;
 import org.elasticsearch.index.mapper.MapperParsingException;
 import org.elasticsearch.index.mapper.MapperService;
-import org.elasticsearch.index.mapper.MapperTestCase;
 import org.elasticsearch.index.mapper.NestedLookup;
 import org.elasticsearch.index.mapper.NestedObjectMapper;
 import org.elasticsearch.index.mapper.ParsedDocument;
+import org.elasticsearch.index.mapper.SourceFieldMapper;
 import org.elasticsearch.index.mapper.SourceToParse;
+import org.elasticsearch.index.mapper.ValueFetcher;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldTypeTests;
+import org.elasticsearch.index.mapper.vectors.IndexOptions;
 import org.elasticsearch.index.mapper.vectors.SparseVectorFieldMapper;
 import org.elasticsearch.index.mapper.vectors.SparseVectorFieldMapperTests;
 import org.elasticsearch.index.mapper.vectors.SparseVectorFieldTypeTests;
@@ -64,35 +69,32 @@ import org.elasticsearch.index.mapper.vectors.TokenPruningConfig;
 import org.elasticsearch.index.query.SearchExecutionContext;
 import org.elasticsearch.index.search.ESToParentBlockJoinQuery;
 import org.elasticsearch.inference.ChunkingSettings;
+import org.elasticsearch.inference.EndpointMetadataTests;
 import org.elasticsearch.inference.InferenceService;
 import org.elasticsearch.inference.MinimalServiceSettings;
 import org.elasticsearch.inference.Model;
 import org.elasticsearch.inference.ServiceSettings;
 import org.elasticsearch.inference.SimilarityMeasure;
 import org.elasticsearch.inference.TaskType;
-import org.elasticsearch.plugins.Plugin;
+import org.elasticsearch.inference.metadata.EndpointMetadata;
+import org.elasticsearch.license.License;
 import org.elasticsearch.search.LeafNestedDocuments;
 import org.elasticsearch.search.NestedDocuments;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.fetch.StoredFieldsSpec;
+import org.elasticsearch.search.lookup.Source;
 import org.elasticsearch.search.vectors.SparseVectorQueryWrapper;
-import org.elasticsearch.test.ClusterServiceUtils;
-import org.elasticsearch.test.client.NoOpClient;
 import org.elasticsearch.test.index.IndexVersionUtils;
-import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xcontent.json.JsonXContent;
-import org.elasticsearch.xpack.core.XPackClientPlugin;
-import org.elasticsearch.xpack.inference.InferencePlugin;
+import org.elasticsearch.xpack.core.inference.results.EmbeddingResults;
+import org.elasticsearch.xpack.inference.highlight.SemanticTextHighlighter;
 import org.elasticsearch.xpack.inference.model.TestModel;
-import org.elasticsearch.xpack.inference.registry.ModelRegistry;
 import org.elasticsearch.xpack.inference.services.elastic.ElasticInferenceService;
-import org.junit.After;
-import org.junit.AssumptionViolatedException;
-import org.junit.Before;
 
 import java.io.IOException;
-import java.util.Collection;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -100,9 +102,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
+import static org.elasticsearch.index.IndexSettings.DENSE_VECTOR_EXPERIMENTAL_FEATURES_SETTING;
+import static org.elasticsearch.index.IndexVersions.NEW_SPARSE_VECTOR;
+import static org.elasticsearch.index.IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BFLOAT16;
+import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.BBQ_MIN_DIMS;
+import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapperTestUtils.defaultDenseVectorIndexOptions;
+import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapperTestUtils.getSupportedSimilarities;
+import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapperTestUtils.randomCompatibleDimensions;
 import static org.elasticsearch.index.mapper.vectors.DenseVectorFieldTypeTests.randomIndexOptionsAll;
 import static org.elasticsearch.index.mapper.vectors.SparseVectorFieldTypeTests.randomSparseVectorIndexOptions;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextField.CHUNKED_EMBEDDINGS_FIELD;
@@ -115,74 +123,71 @@ import static org.elasticsearch.xpack.inference.mapper.SemanticTextField.TEXT_FI
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextField.getChunksFieldName;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextField.getEmbeddingsFieldName;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldMapper.DEFAULT_EIS_ELSER_INFERENCE_ID;
+import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldMapper.DEFAULT_EIS_JINA_V5_INFERENCE_ID;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldMapper.DEFAULT_FALLBACK_ELSER_INFERENCE_ID;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldMapper.DEFAULT_RESCORE_OVERSAMPLE;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldMapper.INDEX_OPTIONS_FIELD;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldMapper.UNSUPPORTED_INDEX_MESSAGE;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldTests.generateRandomChunkingSettings;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldTests.generateRandomChunkingSettingsOtherThan;
+import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldTests.randomMultimodalEmbedding;
 import static org.elasticsearch.xpack.inference.mapper.SemanticTextFieldTests.randomSemanticText;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
-public class SemanticTextFieldMapperTests extends MapperTestCase {
+public class SemanticTextFieldMapperTests extends AbstractSemanticMapperTestCase {
+
     private final boolean useLegacyFormat;
 
-    private TestThreadPool threadPool;
+    private final IndexVersion testIndexVersion;
 
-    public SemanticTextFieldMapperTests(boolean useLegacyFormat) {
+    @SuppressWarnings("this-escape")
+    public SemanticTextFieldMapperTests(boolean useLegacyFormat, License.OperationMode operationMode) {
+        super(operationMode);
         this.useLegacyFormat = useLegacyFormat;
+        this.testIndexVersion = useLegacyFormat
+            ? SemanticInferenceMetadataFieldsMapperTests.getRandomCompatibleIndexVersion(true)
+            : super.getVersion();
     }
 
-    ModelRegistry globalModelRegistry;
-
-    @Before
-    private void initializeTestEnvironment() {
-        threadPool = createThreadPool();
-        var clusterService = ClusterServiceUtils.createClusterService(threadPool);
-        var modelRegistry = new ModelRegistry(clusterService, new NoOpClient(threadPool));
-        globalModelRegistry = spy(modelRegistry);
-        globalModelRegistry.clusterChanged(new ClusterChangedEvent("init", clusterService.state(), clusterService.state()) {
-            @Override
-            public boolean localNodeMaster() {
-                return false;
-            }
-        });
+    @Override
+    protected void registerDefaultEndpoints() {
         registerDefaultEisEndpoint();
-    }
-
-    @After
-    private void stopThreadPool() {
-        threadPool.close();
     }
 
     @ParametersFactory
     public static Iterable<Object[]> parameters() throws Exception {
-        return List.of(new Object[] { true }, new Object[] { false });
+        return List.of(
+            new Object[] { true, License.OperationMode.BASIC },
+            new Object[] { true, License.OperationMode.ENTERPRISE },
+            new Object[] { false, License.OperationMode.BASIC },
+            new Object[] { false, License.OperationMode.ENTERPRISE }
+        );
     }
 
     @Override
-    protected Collection<? extends Plugin> getPlugins() {
-        return List.of(new InferencePlugin(Settings.EMPTY) {
-            @Override
-            protected Supplier<ModelRegistry> getModelRegistry() {
-                return () -> globalModelRegistry;
-            }
-        }, new XPackClientPlugin());
+    protected String minimalIsInvalidRoutingPathErrorMessage(Mapper mapper) {
+        assumeFalse("invalid routing path error message is only checked for mappers created with the new format", useLegacyFormat);
+
+        return super.minimalIsInvalidRoutingPathErrorMessage(mapper);
     }
 
     private void registerDefaultEisEndpoint() {
         globalModelRegistry.putDefaultIdIfAbsent(
             new InferenceService.DefaultConfigId(
-                DEFAULT_EIS_ELSER_INFERENCE_ID,
-                MinimalServiceSettings.sparseEmbedding(ElasticInferenceService.NAME),
+                DEFAULT_EIS_JINA_V5_INFERENCE_ID,
+                MinimalServiceSettings.textEmbedding(
+                    ElasticInferenceService.NAME,
+                    1024,
+                    SimilarityMeasure.COSINE,
+                    DenseVectorFieldMapper.ElementType.FLOAT
+                ),
                 mock(InferenceService.class)
             )
         );
@@ -195,7 +200,10 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
 
     private MapperService createMapperService(XContentBuilder mappings, boolean useLegacyFormat, IndexVersion minIndexVersion)
         throws IOException {
-        return createMapperService(mappings, useLegacyFormat, minIndexVersion, IndexVersion.current());
+        IndexVersion maxIndexVersion = useLegacyFormat
+            ? IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_LEGACY_FORMAT_FORBIDDEN)
+            : IndexVersion.current();
+        return createMapperService(mappings, useLegacyFormat, minIndexVersion, maxIndexVersion);
     }
 
     private MapperService createMapperService(
@@ -205,7 +213,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         IndexVersion maxIndexVersion
     ) throws IOException {
         validateIndexVersion(minIndexVersion, useLegacyFormat);
-        IndexVersion indexVersion = IndexVersionUtils.randomVersionBetween(random(), minIndexVersion, maxIndexVersion);
+        IndexVersion indexVersion = IndexVersionUtils.randomVersionBetween(minIndexVersion, maxIndexVersion);
         return createMapperServiceWithIndexVersion(mappings, useLegacyFormat, indexVersion);
     }
 
@@ -214,6 +222,34 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         var settings = Settings.builder()
             .put(IndexMetadata.SETTING_INDEX_VERSION_CREATED.getKey(), indexVersion)
             .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), useLegacyFormat)
+            .build();
+        return createMapperService(indexVersion, settings, mappings);
+    }
+
+    /**
+     * Creates a (non-legacy) mapper service at the given index version and source mode. With {@code synthetic} or
+     * {@code columnar_stored}, the field stores its original input value(s) in the internal binary doc values field; with
+     * {@code stored}, the original value is kept in {@code _source}.
+     */
+    private MapperService createMapperServiceWithSourceMode(
+        XContentBuilder mappings,
+        IndexVersion indexVersion,
+        SourceFieldMapper.Mode mode
+    ) throws IOException {
+        var settings = Settings.builder()
+            .put(IndexMetadata.SETTING_INDEX_VERSION_CREATED.getKey(), indexVersion)
+            .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), false)
+            .put(IndexSettings.INDEX_MAPPER_SOURCE_MODE_SETTING.getKey(), mode)
+            .build();
+        return createMapperService(indexVersion, settings, mappings);
+    }
+
+    private MapperService createColumnarMapperService(XContentBuilder mappings, IndexVersion indexVersion, IndexMode indexMode)
+        throws IOException {
+        var settings = Settings.builder()
+            .put(IndexMetadata.SETTING_INDEX_VERSION_CREATED.getKey(), indexVersion)
+            .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), false)
+            .put(IndexSettings.MODE.getKey(), indexMode.getName())
             .build();
         return createMapperService(indexVersion, settings, mappings);
     }
@@ -227,11 +263,40 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
     }
 
     @Override
+    protected IndexVersion getVersion() {
+        return testIndexVersion;
+    }
+
+    @Override
     protected Settings getIndexSettings() {
-        return Settings.builder()
-            .put(super.getIndexSettings())
-            .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), useLegacyFormat)
-            .build();
+        if (useLegacyFormat) {
+            return Settings.builder()
+                .put(IndexMetadata.SETTING_INDEX_VERSION_CREATED.getKey(), testIndexVersion)
+                .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), true)
+                .build();
+        }
+        return super.getIndexSettings();
+    }
+
+    /**
+     * Restricts the set of index versions tested by {@link #testSupportedIndexVersions()} to those
+     * that are compatible with the current {@code useLegacyFormat} value.  When the legacy format
+     * is enabled the index version must be strictly before
+     * {@link IndexVersions#SEMANTIC_TEXT_LEGACY_FORMAT_FORBIDDEN}; all released versions are
+     * valid when the legacy format is disabled.
+     */
+    @Override
+    protected Set<IndexVersion> getSupportedVersions() {
+        if (useLegacyFormat) {
+            return IndexVersionUtils.allReleasedVersions()
+                .stream()
+                .filter(
+                    v -> v.onOrAfter(IndexVersions.SEMANTIC_TEXT_FIELD_TYPE)
+                        && v.before(IndexVersions.SEMANTIC_TEXT_LEGACY_FORMAT_FORBIDDEN)
+                )
+                .collect(Collectors.toSet());
+        }
+        return super.getSupportedVersions();
     }
 
     @Override
@@ -242,41 +307,27 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
     @Override
     protected void metaMapping(XContentBuilder b) throws IOException {
         super.metaMapping(b);
-        b.field(INFERENCE_ID_FIELD, DEFAULT_EIS_ELSER_INFERENCE_ID);
+        b.field(INFERENCE_ID_FIELD, DEFAULT_EIS_JINA_V5_INFERENCE_ID);
+    }
+
+    protected void extendedMapping(XContentBuilder b, Map<String, Object> extensions) throws IOException {
+        minimalMapping(b);
+        b.mapContents(extensions);
     }
 
     @Override
-    protected Object getSampleValueForDocument() {
-        return null;
-    }
-
-    @Override
-    protected boolean supportsIgnoreMalformed() {
-        return false;
-    }
-
-    @Override
-    protected boolean supportsStoredFields() {
-        return false;
-    }
-
-    @Override
-    protected void registerParameters(ParameterChecker checker) throws IOException {}
-
-    @Override
-    protected Object generateRandomInputValue(MappedFieldType ft) {
-        assumeFalse("doc_values are not supported in semantic_text", true);
-        return null;
-    }
-
-    @Override
-    protected SyntheticSourceSupport syntheticSourceSupport(boolean ignoreMalformed) {
-        throw new AssumptionViolatedException("not supported");
-    }
-
-    @Override
-    protected IngestScriptSupport ingestScriptSupport() {
-        throw new AssumptionViolatedException("not supported");
+    protected Object getSampleObjectForDocument() {
+        // Only consulted by testSupportsParsingObject, and only for the legacy format (supportsParsingObject() is true only then). A
+        // legacy value is the {text, inference} object; a minimal one with the resolved inference id and no inference results parses.
+        final String expectedInferenceId = testIndexVersion.onOrAfter(IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_JINA_V5)
+            ? DEFAULT_EIS_JINA_V5_INFERENCE_ID
+            : DEFAULT_FALLBACK_ELSER_INFERENCE_ID;
+        return Map.of(
+            SemanticTextField.TEXT_FIELD,
+            randomAlphaOfLength(10),
+            SemanticTextField.INFERENCE_FIELD,
+            Map.of(SemanticTextField.INFERENCE_ID_FIELD, expectedInferenceId, SemanticTextField.CHUNKS_FIELD, List.of())
+        );
     }
 
     @Override
@@ -290,6 +341,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             null,
             null,
             false,
+            false,
             Map.of()
         );
     }
@@ -300,46 +352,264 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         assertTrue(fieldType.isSearchable());
     }
 
+    /**
+     * Randomized sweep over all combinations of endpoint availability and
+     * index version to confirm correct default inference ID.
+     */
     public void testDefaults() throws Exception {
         final String fieldName = "field";
         final XContentBuilder fieldMapping = fieldMapping(this::minimalMapping);
         final XContentBuilder expectedMapping = fieldMapping(this::metaMapping);
 
-        MapperService mapperService = createMapperService(fieldMapping, useLegacyFormat);
+        MapperService mapperService = createMapperService(fieldMapping, useLegacyFormat, IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_JINA_V5);
         DocumentMapper mapper = mapperService.documentMapper();
         assertEquals(Strings.toString(expectedMapping), mapper.mappingSource().toString());
         assertSemanticTextField(mapperService, fieldName, false, null, null);
-        assertInferenceEndpoints(mapperService, fieldName, DEFAULT_EIS_ELSER_INFERENCE_ID, DEFAULT_EIS_ELSER_INFERENCE_ID);
+        assertInferenceEndpoints(mapperService, fieldName, DEFAULT_EIS_JINA_V5_INFERENCE_ID, DEFAULT_EIS_JINA_V5_INFERENCE_ID);
 
         ParsedDocument doc1 = mapper.parse(source(this::writeField));
         List<IndexableField> fields = doc1.rootDoc().getFields("field");
 
         // No indexable fields
         assertTrue(fields.isEmpty());
+
+        for (int i = 0; i < 20; i++) {
+            boolean jinaAvailable = randomBoolean();
+            boolean eisElserAvailable = randomBoolean();
+            boolean postJinaV5 = randomBoolean();
+
+            setDefaultEisEndpoints(jinaAvailable, eisElserAvailable);
+
+            IndexVersion indexVersion = postJinaV5
+                ? IndexVersionUtils.randomVersionBetween(
+                    IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_JINA_V5,
+                    useLegacyFormat
+                        ? IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_LEGACY_FORMAT_FORBIDDEN)
+                        : IndexVersion.current()
+                )
+                : IndexVersionUtils.randomPreviousCompatibleWriteVersion(IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_JINA_V5);
+
+            String expectedId;
+            if (jinaAvailable && postJinaV5) {
+                expectedId = DEFAULT_EIS_JINA_V5_INFERENCE_ID;
+            } else if (eisElserAvailable) {
+                expectedId = DEFAULT_EIS_ELSER_INFERENCE_ID;
+            } else {
+                expectedId = DEFAULT_FALLBACK_ELSER_INFERENCE_ID;
+            }
+
+            MapperService iterMapperService = createMapperServiceWithIndexVersion(fieldMapping, useLegacyFormat, indexVersion);
+            assertInferenceEndpoints(iterMapperService, fieldName, expectedId, expectedId);
+        }
     }
 
-    public void testDefaultInferenceIdUsesEisWhenAvailable() throws Exception {
+    /**
+     * The original input value of a {@code semantic_text} field is stored in an internal binary doc values field so that
+     * {@code _source} can be rebuilt from doc values alone. This verifies the round-trip for a single value, multiple values
+     * (order and duplicates preserved), and that the internal {@code inference} subtree does not leak into the rebuilt source.
+     */
+    public void testOriginalValueRoundTripFromDocValues() throws IOException {
+        assumeFalse("the legacy format keeps the original value in _source", useLegacyFormat);
+        MapperService mapperService = createMapperServiceWithSourceMode(
+            fieldMapping(this::minimalMapping),
+            IndexVersion.current(),
+            SourceFieldMapper.Mode.SYNTHETIC
+        );
+        DocumentMapper mapper = mapperService.documentMapper();
+
+        assertThat(syntheticSource(mapper, b -> b.field("field", "some text")), equalTo("{\"field\":\"some text\"}"));
+        // Document order and duplicates are preserved for multi-valued fields.
+        assertThat(syntheticSource(mapper, b -> b.array("field", "b", "a", "b")), equalTo("{\"field\":[\"b\",\"a\",\"b\"]}"));
+        // A single-element array is rebuilt as a scalar (standard synthetic-source normalization, not specific to this field).
+        assertThat(syntheticSource(mapper, b -> b.array("field", "only")), equalTo("{\"field\":\"only\"}"));
+        // A null value leaves the field absent from the rebuilt source.
+        assertThat(syntheticSource(mapper, b -> b.nullField("field")), equalTo("{}"));
+    }
+
+    /**
+     * The internal binary doc values store for the original input is only written for indices created on or after
+     * {@link IndexVersions#SEMANTIC_TEXT_ORIGINAL_VALUES_DOC_VALUES}; older indices keep the released behavior (original value in
+     * {@code _source} / {@code _ignored_source}).
+     */
+    public void testOriginalValuesStoredOnlyForNewIndices() throws IOException {
+        assumeFalse("the legacy format keeps the original value in _source", useLegacyFormat);
+        final String dvFieldName = SemanticTextField.getOriginalValuesFieldName("field");
+
+        MapperService current = createMapperServiceWithSourceMode(
+            fieldMapping(this::minimalMapping),
+            IndexVersion.current(),
+            SourceFieldMapper.Mode.SYNTHETIC
+        );
+        ParsedDocument currentDoc = current.documentMapper().parse(source(b -> b.field("field", "hello")));
+        assertNotNull("new indices store the original value in doc values", currentDoc.rootDoc().getField(dvFieldName));
+
+        IndexVersion previous = IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_ORIGINAL_VALUES_DOC_VALUES);
+        MapperService old = createMapperServiceWithSourceMode(
+            fieldMapping(this::minimalMapping),
+            previous,
+            SourceFieldMapper.Mode.SYNTHETIC
+        );
+        ParsedDocument oldDoc = old.documentMapper().parse(source(b -> b.field("field", "hello")));
+        assertNull("pre-feature indices do not store the original value in doc values", oldDoc.rootDoc().getField(dvFieldName));
+    }
+
+    /**
+     * Columnar index modes reject any field whose {@code _source} is not reconstructable from doc values. A {@code semantic_text}
+     * field is accepted because its original value is stored in doc values and its internal {@code inference} sub-fields (e.g.
+     * {@code offset_source}) are exempt - they are not part of {@code _source} but are reconstructed into {@code _inference_fields}.
+     * The value round-trip itself is covered by {@link #testOriginalValueRoundTripFromDocValues()} (the loader is identical).
+     */
+    public void testSemanticTextAcceptedInColumnar() throws IOException {
+        assumeFalse("the legacy format keeps the original value in _source", useLegacyFormat);
+        final String dvFieldName = SemanticTextField.getOriginalValuesFieldName("field");
+        // Deliberately use an index version BEFORE the synthetic-source gate: in columnar mode the input is always stored in doc
+        // values regardless of index version (columnar is unreleased), so the version gate applies only to non-columnar synthetic
+        // source. This verifies columnar acceptance does not depend on the index version.
+        final IndexVersion indexVersion = IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_ORIGINAL_VALUES_DOC_VALUES);
+        for (IndexMode indexMode : List.of(IndexMode.COLUMNAR, IndexMode.LOGSDB_COLUMNAR)) {
+            // Mapping creation succeeding is the assertion: the columnar "every field reconstructable from doc values" check passes.
+            MapperService mapperService = createColumnarMapperService(fieldMapping(this::minimalMapping), indexVersion, indexMode);
+            ParsedDocument doc = mapperService.documentMapper()
+                .parse(source(b -> b.field("@timestamp", "2024-01-01T00:00:00Z").field("field", "some text")));
+            assertNotNull("original value stored in doc values for columnar _source reconstruction", doc.rootDoc().getField(dvFieldName));
+        }
+    }
+
+    /**
+     * When {@code _source} is reconstructed from doc values, retrieving the field (the {@code fields} option, highlighting) reads the
+     * original value from its binary doc values column rather than {@code _source}. This verifies the value fetcher reads the doc
+     * values (order and duplicates preserved) and declares no {@code _source} requirement, so the fetch phase need not rebuild it.
+     */
+    public void testOriginalValueFetchedFromDocValues() throws IOException {
+        assumeFalse("the legacy format keeps the original value in _source", useLegacyFormat);
+        MapperService mapperService = createMapperServiceWithSourceMode(
+            fieldMapping(this::minimalMapping),
+            IndexVersion.current(),
+            SourceFieldMapper.Mode.SYNTHETIC
+        );
+        ParsedDocument doc = mapperService.documentMapper().parse(source(b -> b.array("field", "alpha", "beta", "alpha")));
+
+        SearchExecutionContext searchContext = createSearchExecutionContext(mapperService);
+        ValueFetcher fetcher = searchContext.getFieldType("field").valueFetcher(searchContext, null);
+        assertThat(fetcher, instanceOf(OriginalValuesDocValuesFetcher.class));
+        assertThat(fetcher.storedFieldsSpec(), equalTo(StoredFieldsSpec.NO_REQUIREMENTS));
+
+        withLuceneIndex(mapperService, iw -> iw.addDocuments(doc.docs()), reader -> {
+            LeafReaderContext leaf = reader.leaves().get(0);
+            fetcher.setNextReader(leaf);
+            // An empty Source proves the values come from doc values and not from _source.
+            List<Object> values = fetcher.fetchValues(Source.empty(XContentType.JSON), 0, new ArrayList<>());
+            assertThat(values, contains("alpha", "beta", "alpha"));
+        });
+    }
+
+    /**
+     * The semantic highlighter declares it can highlight without {@code _source} only when every inference source field is
+     * retrievable from doc values, so the fetch phase does not rebuild {@code _source} for it. When the original value is kept in
+     * {@code _source} (stored mode), it must still load {@code _source}.
+     */
+    public void testHighlighterAvoidsSourceWhenValuesInDocValues() throws IOException {
+        assumeFalse("the legacy format keeps the original value in _source", useLegacyFormat);
+        SemanticTextHighlighter highlighter = new SemanticTextHighlighter();
+
+        MapperService synthetic = createMapperServiceWithSourceMode(
+            fieldMapping(this::minimalMapping),
+            IndexVersion.current(),
+            SourceFieldMapper.Mode.SYNTHETIC
+        );
+        SearchExecutionContext syntheticContext = createSearchExecutionContext(synthetic);
+        assertTrue(highlighter.canHighlightWithoutSource(syntheticContext.getFieldType("field"), syntheticContext));
+
+        MapperService stored = createMapperServiceWithSourceMode(
+            fieldMapping(this::minimalMapping),
+            IndexVersion.current(),
+            SourceFieldMapper.Mode.STORED
+        );
+        SearchExecutionContext storedContext = createSearchExecutionContext(stored);
+        assertFalse(highlighter.canHighlightWithoutSource(storedContext.getFieldType("field"), storedContext));
+    }
+
+    /**
+     * When a {@code semantic_text} field is fed by {@code copy_to} from a plain text field, the highlighter also loads that text
+     * field. Since it is only retrievable from {@code _source}, the highlighter cannot skip {@code _source} even in synthetic source.
+     */
+    public void testHighlighterRequiresSourceWhenCopyToSourceFieldNeedsIt() throws IOException {
+        assumeFalse("the legacy format keeps the original value in _source", useLegacyFormat);
+        MapperService mapperService = createMapperServiceWithSourceMode(mapping(b -> {
+            b.startObject("body").field("type", "text").field("copy_to", "field").endObject();
+            b.startObject("field").field("type", "semantic_text").field("inference_id", "test_model").endObject();
+        }), IndexVersion.current(), SourceFieldMapper.Mode.SYNTHETIC);
+        SearchExecutionContext context = createSearchExecutionContext(mapperService);
+        assertFalse(new SemanticTextHighlighter().canHighlightWithoutSource(context.getFieldType("field"), context));
+    }
+
+    public void testIndexSettingWithCustomInferenceId() throws Exception {
         final String fieldName = "field";
         final XContentBuilder fieldMapping = fieldMapping(this::minimalMapping);
+        final String customEndpoint = "my-custom-elser-endpoint";
 
-        MapperService mapperService = createMapperService(fieldMapping, useLegacyFormat);
-        assertInferenceEndpoints(mapperService, fieldName, DEFAULT_EIS_ELSER_INFERENCE_ID, DEFAULT_EIS_ELSER_INFERENCE_ID);
+        IndexVersion indexVersion = SemanticInferenceMetadataFieldsMapperTests.getRandomCompatibleIndexVersion(useLegacyFormat);
+        var settings = Settings.builder()
+            .put(IndexMetadata.SETTING_INDEX_VERSION_CREATED.getKey(), indexVersion)
+            .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), useLegacyFormat)
+            .put(SemanticTextFieldMapper.INDEX_SEMANTIC_TEXT_DEFAULT_INFERENCE_ID.getKey(), customEndpoint)
+            .build();
+        MapperService mapperService = createMapperService(indexVersion, settings, fieldMapping);
+        assertInferenceEndpoints(mapperService, fieldName, customEndpoint, customEndpoint);
     }
 
-    public void testDefaultInferenceIdFallsBackWhenEisUnavailable() throws Exception {
+    public void testExplicitFieldInferenceIdTakesPrecedenceOverIndexSetting() throws Exception {
         final String fieldName = "field";
-        final XContentBuilder fieldMapping = fieldMapping(this::minimalMapping);
+        final String explicitEndpoint = "explicit-endpoint";
+        final XContentBuilder fieldMapping = fieldMapping(
+            b -> b.field("type", "semantic_text").field(INFERENCE_ID_FIELD, explicitEndpoint)
+        );
 
-        removeDefaultEisEndpoint();
-
-        MapperService mapperService = createMapperService(fieldMapping, useLegacyFormat);
-        assertInferenceEndpoints(mapperService, fieldName, DEFAULT_FALLBACK_ELSER_INFERENCE_ID, DEFAULT_FALLBACK_ELSER_INFERENCE_ID);
+        IndexVersion indexVersion = SemanticInferenceMetadataFieldsMapperTests.getRandomCompatibleIndexVersion(useLegacyFormat);
+        var settings = Settings.builder()
+            .put(IndexMetadata.SETTING_INDEX_VERSION_CREATED.getKey(), indexVersion)
+            .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), useLegacyFormat)
+            .put(SemanticTextFieldMapper.INDEX_SEMANTIC_TEXT_DEFAULT_INFERENCE_ID.getKey(), "my-custom-endpoint")
+            .build();
+        MapperService mapperService = createMapperService(indexVersion, settings, fieldMapping);
+        assertInferenceEndpoints(mapperService, fieldName, explicitEndpoint, explicitEndpoint);
     }
 
-    private void removeDefaultEisEndpoint() {
+    public void testEmptyDefaultInferenceIdSettingThrows() throws Exception {
+        final XContentBuilder fieldMapping = fieldMapping(this::minimalMapping);
+        IndexVersion indexVersion = SemanticInferenceMetadataFieldsMapperTests.getRandomCompatibleIndexVersion(useLegacyFormat);
+        for (String blank : new String[] { null, "", " ", "   " }) {
+            var settings = Settings.builder()
+                .put(IndexMetadata.SETTING_INDEX_VERSION_CREATED.getKey(), indexVersion)
+                .put(InferenceMetadataFieldsMapper.USE_LEGACY_SEMANTIC_TEXT_FORMAT.getKey(), useLegacyFormat)
+                .put(SemanticTextFieldMapper.INDEX_SEMANTIC_TEXT_DEFAULT_INFERENCE_ID.getKey(), blank)
+                .build();
+            Exception e = expectThrows(MapperParsingException.class, () -> createMapperService(indexVersion, settings, fieldMapping));
+            assertThat(e.getMessage(), containsString("[index.semantic_text.default_inference_id] must not be blank"));
+        }
+    }
+
+    /**
+     * Resets the model registry to exactly the given endpoint availability for each iteration of the
+     * randomized sweep in {@link #testDefaults()}.
+     */
+    private void setDefaultEisEndpoints(boolean jinaEnabled, boolean eisElserEnabled) {
         PlainActionFuture<Boolean> removalFuture = new PlainActionFuture<>();
-        globalModelRegistry.removeDefaultConfigs(Set.of(DEFAULT_EIS_ELSER_INFERENCE_ID), removalFuture);
-        assertTrue("Failed to remove default EIS endpoint", removalFuture.actionGet(TEST_REQUEST_TIMEOUT));
+        globalModelRegistry.removeDefaultConfigs(Set.of(DEFAULT_EIS_JINA_V5_INFERENCE_ID, DEFAULT_EIS_ELSER_INFERENCE_ID), removalFuture);
+        removalFuture.actionGet(TEST_REQUEST_TIMEOUT);
+
+        if (jinaEnabled) {
+            registerDefaultEisEndpoint();
+        }
+        if (eisElserEnabled) {
+            globalModelRegistry.putDefaultIdIfAbsent(
+                new InferenceService.DefaultConfigId(
+                    DEFAULT_EIS_ELSER_INFERENCE_ID,
+                    MinimalServiceSettings.sparseEmbedding(ElasticInferenceService.NAME),
+                    mock(InferenceService.class)
+                )
+            );
+        }
     }
 
     @Override
@@ -372,12 +642,16 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             );
             final XContentBuilder expectedMapping = fieldMapping(
                 b -> b.field("type", "semantic_text")
-                    .field(INFERENCE_ID_FIELD, DEFAULT_EIS_ELSER_INFERENCE_ID)
+                    .field(INFERENCE_ID_FIELD, DEFAULT_EIS_JINA_V5_INFERENCE_ID)
                     .field(SEARCH_INFERENCE_ID_FIELD, searchInferenceId)
             );
-            final MapperService mapperService = createMapperService(fieldMapping, useLegacyFormat);
+            final MapperService mapperService = createMapperService(
+                fieldMapping,
+                useLegacyFormat,
+                IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_JINA_V5
+            );
             assertSemanticTextField(mapperService, fieldName, false, null, null);
-            assertInferenceEndpoints(mapperService, fieldName, DEFAULT_EIS_ELSER_INFERENCE_ID, searchInferenceId);
+            assertInferenceEndpoints(mapperService, fieldName, DEFAULT_EIS_JINA_V5_INFERENCE_ID, searchInferenceId);
             assertSerialization.accept(expectedMapping, mapperService);
         }
         {
@@ -429,34 +703,61 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         }
     }
 
-    private SemanticTextIndexOptions getDefaultSparseVectorIndexOptionsForMapper(MapperService mapperService) {
+    private SemanticIndexOptions getDefaultSparseVectorIndexOptionsForMapper(MapperService mapperService) {
         var mapperIndexVersion = mapperService.getIndexSettings().getIndexVersionCreated();
         var defaultSparseVectorIndexOptions = SparseVectorFieldMapper.SparseVectorIndexOptions.getDefaultIndexOptions(mapperIndexVersion);
         return defaultSparseVectorIndexOptions == null
             ? null
-            : new SemanticTextIndexOptions(SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, defaultSparseVectorIndexOptions);
+            : new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, defaultSparseVectorIndexOptions);
     }
 
     public void testInvalidTaskTypes() {
         for (var taskType : TaskType.values()) {
-            if (taskType == TaskType.TEXT_EMBEDDING || taskType == TaskType.SPARSE_EMBEDDING) {
+            if (taskType == TaskType.TEXT_EMBEDDING || taskType == TaskType.SPARSE_EMBEDDING || taskType == TaskType.EMBEDDING) {
                 continue;
             }
-            Exception e = expectThrows(
-                MapperParsingException.class,
-                () -> createMapperService(
-                    fieldMapping(
-                        b -> b.field("type", "semantic_text")
-                            .field(INFERENCE_ID_FIELD, "test1")
-                            .startObject("model_settings")
-                            .field("task_type", taskType)
-                            .endObject()
-                    ),
-                    useLegacyFormat
-                )
-            );
-            assertThat(e.getMessage(), containsString("Wrong [task_type], expected text_embedding or sparse_embedding"));
+            Exception e = expectThrows(MapperParsingException.class, () -> createMapperService(fieldMapping(b -> {
+                b.field("type", "semantic_text")
+                    .field(INFERENCE_ID_FIELD, "test1")
+                    .startObject("model_settings")
+                    .field("task_type", taskType);
+                b.endObject();
+            }), useLegacyFormat));
+            assertThat(e.getMessage(), containsString("Wrong [task_type], expected text_embedding, embedding, or sparse_embedding"));
         }
+    }
+
+    public void testMultiFieldNamedInputIsRejected() throws IOException {
+        // The new format stores the original input in an internal [<field>.input] doc values column; a multi-field with that name
+        // would write to the same Lucene field, so it is rejected. (Multi-fields are rejected outright in the legacy format.)
+        assumeFalse("multi-fields are rejected entirely in the legacy format", useLegacyFormat);
+        IndexVersion indexVersion = IndexVersionUtils.randomVersionBetween(
+            IndexVersions.SEMANTIC_TEXT_ORIGINAL_VALUES_DOC_VALUES,
+            IndexVersion.current()
+        );
+        Exception e = expectThrows(MapperParsingException.class, () -> createMapperServiceWithIndexVersion(fieldMapping(b -> {
+            b.field("type", "semantic_text");
+            b.field("inference_id", "my_inference_id");
+            b.startObject("fields");
+            b.startObject("input").field("type", "keyword").endObject();
+            b.endObject();
+        }), useLegacyFormat, indexVersion));
+        assertThat(e.getMessage(), containsString("cannot have a multi-field named [input]"));
+    }
+
+    public void testMultiFieldNamedInputIsAccepted() throws IOException {
+        // At an index version before the original values are stored in doc values, the [<field>.input] column is not reserved, so
+        // a multi-field named [input] stays valid. This verifies the gating does not invalidate indices created at an older version.
+        assumeFalse("multi-fields are rejected entirely in the legacy format", useLegacyFormat);
+        IndexVersion indexVersion = IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_ORIGINAL_VALUES_DOC_VALUES);
+        MapperService mapperService = createMapperServiceWithIndexVersion(fieldMapping(b -> {
+            b.field("type", "semantic_text");
+            b.field("inference_id", "my_inference_id");
+            b.startObject("fields");
+            b.startObject("input").field("type", "keyword").endObject();
+            b.endObject();
+        }), useLegacyFormat, indexVersion);
+        assertNotNull(mapperService.mappingLookup().getMapper("field.input"));
     }
 
     public void testMultiFieldsSupport() throws IOException {
@@ -475,9 +776,9 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             IndexVersion indexVersion = SparseVectorFieldMapperTests.getIndexOptionsCompatibleIndexVersion();
             SparseVectorFieldMapper.SparseVectorIndexOptions expectedIndexOptions = SparseVectorFieldMapper.SparseVectorIndexOptions
                 .getDefaultIndexOptions(indexVersion);
-            SemanticTextIndexOptions semanticTextIndexOptions = expectedIndexOptions == null
+            SemanticIndexOptions semanticIndexOptions = expectedIndexOptions == null
                 ? null
-                : new SemanticTextIndexOptions(SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, expectedIndexOptions);
+                : new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, expectedIndexOptions);
             var mapperService = createMapperServiceWithIndexVersion(fieldMapping(b -> {
                 b.field("type", "text");
                 b.startObject("fields");
@@ -490,7 +791,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
                 b.endObject();
                 b.endObject();
             }), useLegacyFormat, indexVersion);
-            assertSemanticTextField(mapperService, "field.semantic", true, null, semanticTextIndexOptions);
+            assertSemanticTextField(mapperService, "field.semantic", true, null, semanticIndexOptions);
 
             mapperService = createMapperServiceWithIndexVersion(fieldMapping(b -> {
                 b.field("type", "semantic_text");
@@ -504,7 +805,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
                 b.endObject();
                 b.endObject();
             }), useLegacyFormat, indexVersion);
-            assertSemanticTextField(mapperService, "field", true, null, semanticTextIndexOptions);
+            assertSemanticTextField(mapperService, "field", true, null, semanticIndexOptions);
 
             mapperService = createMapperServiceWithIndexVersion(fieldMapping(b -> {
                 b.field("type", "semantic_text");
@@ -522,8 +823,8 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
                 b.endObject();
                 b.endObject();
             }), useLegacyFormat, indexVersion);
-            assertSemanticTextField(mapperService, "field", true, null, semanticTextIndexOptions);
-            assertSemanticTextField(mapperService, "field.semantic", true, null, semanticTextIndexOptions);
+            assertSemanticTextField(mapperService, "field", true, null, semanticIndexOptions);
+            assertSemanticTextField(mapperService, "field.semantic", true, null, semanticIndexOptions);
 
             Exception e = expectThrows(MapperParsingException.class, () -> createMapperService(fieldMapping(b -> {
                 b.field("type", "semantic_text");
@@ -538,90 +839,17 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         }
     }
 
-    public void testUpdateInferenceId_GivenPreviousAndNewDoNotExist() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        MapperService mapperService = createMapperService(
-            mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", "test_model").endObject()),
-            useLegacyFormat
-        );
-        assertInferenceEndpoints(mapperService, fieldName, "test_model", "test_model");
-        assertSemanticTextField(mapperService, fieldName, false, null, null);
-
-        merge(
-            mapperService,
-            mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", "another_model").endObject())
-        );
-
-        assertInferenceEndpoints(mapperService, fieldName, "another_model", "another_model");
-        assertSemanticTextField(mapperService, fieldName, false, null, null);
-    }
-
-    public void testUpdateInferenceId_GivenCurrentHasNoSetModelSettingsAndNewDoesNotExist() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.sparseEmbedding("previous_service");
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        var mapperService = createMapperService(
-            mapping(
-                b -> b.startObject(fieldName)
-                    .field("type", SemanticTextFieldMapper.CONTENT_TYPE)
-                    .field(INFERENCE_ID_FIELD, oldInferenceId)
-                    .endObject()
-            ),
-            useLegacyFormat
-        );
-
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, false, null, null);
-
-        String newInferenceId = "new_inference_id";
-        merge(
-            mapperService,
-            mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
-        );
-
-        assertInferenceEndpoints(mapperService, fieldName, newInferenceId, newInferenceId);
-        assertSemanticTextField(mapperService, fieldName, false, null, null);
-    }
-
-    public void testUpdateInferenceId_GivenCurrentHasModelSettingsAndNewDoesNotExist() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.sparseEmbedding("previous_service");
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        var mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
-
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-
-        String newInferenceId = "new_inference_id";
-
-        Exception exc = expectThrows(
-            IllegalArgumentException.class,
-            () -> merge(
-                mapperService,
-                mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
-            )
-        );
-
-        assertThat(
-            exc.getMessage(),
-            containsString(
-                "Cannot update [semantic_text] field ["
-                    + fieldName
-                    + "] because inference endpoint ["
-                    + newInferenceId
-                    + "] does not exist."
-            )
-        );
-    }
-
-    public void testUpdateInferenceId_GivenCurrentHasNoModelSettingsAndNewIsIncompatibleTaskType_ShouldSucceed() throws IOException {
+    public void testUpdateInferenceId_GivenNoModelSettings() throws IOException {
         for (int randomizedRun = 0; randomizedRun < 10; randomizedRun++) {
             String fieldName = randomAlphaOfLengthBetween(5, 15);
-            String oldInferenceId = "old_inference_id";
-            TestModel oldModel = TestModel.createRandomInstance();
-            givenModelSettings(oldInferenceId, new MinimalServiceSettings(oldModel));
+            String oldInferenceId = randomAlphaOfLengthBetween(5, 15);
+
+            TestModel oldModel = null;
+            if (randomBoolean()) {
+                oldModel = TestModel.createRandomInstance();
+                givenModelSettings(oldInferenceId, new MinimalServiceSettings(oldModel));
+            }
+
             var mapperService = createMapperService(
                 mapping(
                     b -> b.startObject(fieldName)
@@ -634,259 +862,243 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
 
             assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
             assertSemanticTextField(mapperService, fieldName, false, null, null);
-            assertEmbeddingsFieldMapperMatchesModel(mapperService, fieldName, oldModel);
+            if (oldModel != null) {
+                assertEmbeddingsFieldMapperMatchesModel(mapperService, fieldName, oldModel);
+            }
 
-            String newInferenceId = "new_inference_id";
-            TestModel newModel = randomValueOtherThan(oldModel, TestModel::createRandomInstance);
-            givenModelSettings(newInferenceId, new MinimalServiceSettings(newModel));
+            String newInferenceId = randomValueOtherThan(oldInferenceId, () -> randomAlphaOfLengthBetween(5, 15));
+            TestModel newModel = null;
+            if (randomBoolean()) {
+                newModel = TestModel.createRandomInstance();
+                givenModelSettings(newInferenceId, new MinimalServiceSettings(newModel));
+            }
+
             merge(
                 mapperService,
-                mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
+                mapping(
+                    b -> b.startObject(fieldName)
+                        .field("type", SemanticTextFieldMapper.CONTENT_TYPE)
+                        .field(INFERENCE_ID_FIELD, newInferenceId)
+                        .endObject()
+                )
             );
 
             assertInferenceEndpoints(mapperService, fieldName, newInferenceId, newInferenceId);
             assertSemanticTextField(mapperService, fieldName, false, null, null);
-            assertEmbeddingsFieldMapperMatchesModel(mapperService, fieldName, newModel);
+            if (newModel != null) {
+                assertEmbeddingsFieldMapperMatchesModel(mapperService, fieldName, newModel);
+            }
         }
     }
 
-    public void testUpdateInferenceId_GivenCurrentHasSparseModelSettingsAndNewIsCompatible() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.sparseEmbedding("previous_service");
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
+    public void testUpdateInferenceId_GivenModelSettings() throws IOException {
+        for (int randomizedRun = 0; randomizedRun < 20; randomizedRun++) {
+            final String fieldName = randomAlphaOfLengthBetween(5, 15);
+            final String oldInferenceId = randomAlphaOfLengthBetween(5, 15);
+            final String newInferenceId = randomValueOtherThan(oldInferenceId, () -> randomAlphaOfLengthBetween(5, 15));
 
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
+            final TestModel oldModel = TestModel.createRandomInstance();
+            final MinimalServiceSettings previousModelSettings = new MinimalServiceSettings(oldModel);
+            givenModelSettings(oldInferenceId, previousModelSettings);
 
-        String newInferenceId = "new_inference_id";
-        MinimalServiceSettings newModelSettings = MinimalServiceSettings.sparseEmbedding("new_service");
-        givenModelSettings(newInferenceId, newModelSettings);
-        merge(
-            mapperService,
-            mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
-        );
+            final MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
+            final SemanticIndexOptions currentIndexOptions = extractCurrentIndexOptions(mapperService, fieldName);
+            assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
+            assertSemanticTextField(mapperService, fieldName, true, null, currentIndexOptions);
+            assertEmbeddingsFieldMapperMatchesModel(mapperService, fieldName, oldModel);
 
-        assertInferenceEndpoints(mapperService, fieldName, newInferenceId, newInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-        SemanticTextFieldMapper semanticFieldMapper = getSemanticFieldMapper(mapperService, fieldName);
-        assertThat(semanticFieldMapper.fieldType().getModelSettings(), equalTo(newModelSettings));
-    }
-
-    public void testUpdateInferenceId_GivenCurrentHasSparseModelSettingsAndNewSetsDefault() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.sparseEmbedding("previous_service");
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
-
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-
-        MinimalServiceSettings newModelSettings = MinimalServiceSettings.sparseEmbedding("new_service");
-        givenModelSettings(DEFAULT_EIS_ELSER_INFERENCE_ID, newModelSettings);
-        merge(mapperService, mapping(b -> b.startObject(fieldName).field("type", "semantic_text").endObject()));
-
-        assertInferenceEndpoints(mapperService, fieldName, DEFAULT_EIS_ELSER_INFERENCE_ID, DEFAULT_EIS_ELSER_INFERENCE_ID);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-        SemanticTextFieldMapper semanticFieldMapper = getSemanticFieldMapper(mapperService, fieldName);
-        assertThat(semanticFieldMapper.fieldType().getModelSettings(), equalTo(newModelSettings));
-    }
-
-    public void testUpdateInferenceId_GivenCurrentHasSparseModelSettingsAndNewIsIncompatibleTaskType() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.sparseEmbedding("previous_service");
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
-
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-
-        String newInferenceId = "new_inference_id";
-        MinimalServiceSettings newModelSettings = MinimalServiceSettings.textEmbedding(
-            "new_service",
-            48,
-            SimilarityMeasure.L2_NORM,
-            DenseVectorFieldMapper.ElementType.BIT
-        );
-        givenModelSettings(newInferenceId, newModelSettings);
-
-        Exception exc = expectThrows(
-            IllegalArgumentException.class,
-            () -> merge(
+            final CheckedRunnable<IOException> mergeRunner = () -> merge(
                 mapperService,
-                mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
-            )
-        );
+                mapping(
+                    b -> b.startObject(fieldName)
+                        .field("type", SemanticTextFieldMapper.CONTENT_TYPE)
+                        .field(INFERENCE_ID_FIELD, newInferenceId)
+                        .endObject()
+                )
+            );
 
-        assertThat(
-            exc.getMessage(),
-            containsString(
-                "Cannot update [semantic_text] field ["
-                    + fieldName
-                    + "] because inference endpoint ["
-                    + oldInferenceId
-                    + "] with model settings ["
-                    + previousModelSettings
-                    + "] is not compatible with new inference endpoint ["
-                    + newInferenceId
-                    + "] with model settings ["
-                    + newModelSettings
-                    + "]"
-            )
-        );
+            if (randomBoolean()) {
+                // Compatible: new endpoint has identical task type / dimensions / similarity / element type
+                TestModel newModel = createCompatibleModel(newInferenceId, oldModel);
+                MinimalServiceSettings newModelSettings = new MinimalServiceSettings(newModel);
+                givenModelSettings(newInferenceId, newModelSettings);
+
+                mergeRunner.run();
+                assertInferenceEndpoints(mapperService, fieldName, newInferenceId, newInferenceId);
+                assertSemanticTextField(mapperService, fieldName, true, null, currentIndexOptions);
+                assertEmbeddingsFieldMapperMatchesModel(mapperService, fieldName, newModel);
+            } else {
+                final TestModel incompatibleModel = createIncompatibleModel(newInferenceId, oldModel);
+                final String expectedErrorMessage;
+                if (incompatibleModel == null) {
+                    // Incompatible: new endpoint does not exist
+                    expectedErrorMessage = "Cannot update ["
+                        + SemanticTextFieldMapper.CONTENT_TYPE
+                        + "] field ["
+                        + fieldName
+                        + "] because inference endpoint ["
+                        + newInferenceId
+                        + "] does not exist.";
+                } else {
+                    // Incompatible: new endpoint exists but its model settings are incompatible
+                    MinimalServiceSettings incompatibleModelSettings = new MinimalServiceSettings(incompatibleModel);
+                    givenModelSettings(newInferenceId, incompatibleModelSettings);
+
+                    expectedErrorMessage = "Cannot update ["
+                        + SemanticTextFieldMapper.CONTENT_TYPE
+                        + "] field ["
+                        + fieldName
+                        + "] because inference endpoint ["
+                        + oldInferenceId
+                        + "] with model settings ["
+                        + previousModelSettings
+                        + "] is not compatible with new inference endpoint ["
+                        + newInferenceId
+                        + "] with model settings ["
+                        + incompatibleModelSettings
+                        + "]";
+                }
+
+                IllegalArgumentException exc = assertThrows(IllegalArgumentException.class, mergeRunner::run);
+                assertThat(exc.getMessage(), containsString(expectedErrorMessage));
+            }
+        }
     }
 
-    public void testUpdateInferenceId_GivenCurrentHasDenseModelSettingsAndNewIsCompatible() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.textEmbedding(
-            "previous_service",
-            48,
-            SimilarityMeasure.L2_NORM,
-            DenseVectorFieldMapper.ElementType.BIT
-        );
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
+    private static SemanticIndexOptions extractCurrentIndexOptions(MapperService mapperService, String fieldName) {
+        SemanticIndexOptions currentIndexOptions = null;
+        SemanticTextFieldMapper sfm = getSemanticFieldMapper(mapperService, fieldName);
+        FieldMapper embeddingsMapper = sfm.fieldType().getEmbeddingsField();
+        if (embeddingsMapper instanceof DenseVectorFieldMapper dvm) {
+            IndexOptions denseIndexOptions = dvm.fieldType().getIndexOptions();
+            if (denseIndexOptions != null) {
+                currentIndexOptions = new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR, denseIndexOptions);
+            }
+        }
 
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-
-        String newInferenceId = "new_inference_id";
-        MinimalServiceSettings newModelSettings = MinimalServiceSettings.textEmbedding(
-            "new_service",
-            48,
-            SimilarityMeasure.L2_NORM,
-            DenseVectorFieldMapper.ElementType.BIT
-        );
-        givenModelSettings(newInferenceId, newModelSettings);
-        merge(
-            mapperService,
-            mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
-        );
-
-        assertInferenceEndpoints(mapperService, fieldName, newInferenceId, newInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-        SemanticTextFieldMapper semanticFieldMapper = getSemanticFieldMapper(mapperService, fieldName);
-        assertThat(semanticFieldMapper.fieldType().getModelSettings(), equalTo(newModelSettings));
+        return currentIndexOptions;
     }
 
-    public void testUpdateInferenceId_GivenCurrentHasDenseModelSettingsAndNewIsIncompatibleTaskType() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.textEmbedding(
-            "previous_service",
-            48,
-            SimilarityMeasure.L2_NORM,
-            DenseVectorFieldMapper.ElementType.BIT
-        );
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
-
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-
-        String newInferenceId = "new_inference_id";
-        MinimalServiceSettings newModelSettings = MinimalServiceSettings.sparseEmbedding("new_service");
-        givenModelSettings(newInferenceId, newModelSettings);
-
-        Exception exc = expectThrows(
-            IllegalArgumentException.class,
-            () -> merge(
-                mapperService,
-                mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
-            )
-        );
-
-        assertThat(
-            exc.getMessage(),
-            containsString(
-                "Cannot update [semantic_text] field ["
-                    + fieldName
-                    + "] because inference endpoint ["
-                    + oldInferenceId
-                    + "] with model settings ["
-                    + previousModelSettings
-                    + "] is not compatible with new inference endpoint ["
-                    + newInferenceId
-                    + "] with model settings ["
-                    + newModelSettings
-                    + "]"
-            )
-        );
-    }
-
-    public void testUpdateInferenceId_GivenCurrentHasDenseModelSettingsAndNewHasIncompatibleDimensions() throws IOException {
-        testUpdateInferenceId_GivenDenseModelsWithDifferentSettings(
-            MinimalServiceSettings.textEmbedding("previous_service", 48, SimilarityMeasure.L2_NORM, DenseVectorFieldMapper.ElementType.BIT),
-            MinimalServiceSettings.textEmbedding("new_service", 40, SimilarityMeasure.L2_NORM, DenseVectorFieldMapper.ElementType.BIT)
-        );
-    }
-
-    public void testUpdateInferenceId_GivenCurrentHasDenseModelSettingsAndNewHasIncompatibleSimilarityMeasure() throws IOException {
-        testUpdateInferenceId_GivenDenseModelsWithDifferentSettings(
-            MinimalServiceSettings.textEmbedding(
-                "previous_service",
-                48,
-                SimilarityMeasure.L2_NORM,
-                DenseVectorFieldMapper.ElementType.BYTE
+    /**
+     * Creates a {@link TestModel} that is compatible with {@code baseModel} (same task type, dimensions,
+     * similarity, and element type) but with a distinct service, task settings, and secrets, registered
+     * under the given inference ID. Compatible models can be substituted via an inference-ID update.
+     */
+    private static TestModel createCompatibleModel(String inferenceId, TestModel baseModel) {
+        return new TestModel(
+            inferenceId,
+            baseModel.getTaskType(),
+            randomAlphaOfLength(4),
+            new TestModel.TestServiceSettings(
+                randomAlphaOfLength(4),
+                baseModel.getServiceSettings().dimensions(),
+                baseModel.getServiceSettings().similarity(),
+                baseModel.getServiceSettings().elementType()
             ),
-            MinimalServiceSettings.textEmbedding("new_service", 48, SimilarityMeasure.COSINE, DenseVectorFieldMapper.ElementType.BYTE)
+            new TestModel.TestTaskSettings(randomInt(3)),
+            new TestModel.TestSecretSettings(randomAlphaOfLength(4))
         );
     }
 
-    public void testUpdateInferenceId_GivenCurrentHasDenseModelSettingsAndNewHasIncompatibleElementType() throws IOException {
-        testUpdateInferenceId_GivenDenseModelsWithDifferentSettings(
-            MinimalServiceSettings.textEmbedding(
-                "previous_service",
-                48,
-                SimilarityMeasure.L2_NORM,
-                DenseVectorFieldMapper.ElementType.BYTE
-            ),
-            MinimalServiceSettings.textEmbedding("new_service", 48, SimilarityMeasure.L2_NORM, DenseVectorFieldMapper.ElementType.BIT)
-        );
+    /** The kinds of incompatibility that can exist between two inference endpoint model settings. */
+    private enum IncompatibilityKind {
+        TASK_TYPE,
+        DIMENSIONS,
+        SIMILARITY,
+        ELEMENT_TYPE,
+        DOES_NOT_EXIST
     }
 
-    public void testUpdateInferenceId_CurrentHasDenseModelSettingsAndNewSetsDefault_ShouldFailAsDefaultIsSparse() throws IOException {
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        MinimalServiceSettings previousModelSettings = MinimalServiceSettings.textEmbedding(
-            "previous_service",
-            48,
-            SimilarityMeasure.L2_NORM,
-            DenseVectorFieldMapper.ElementType.BIT
-        );
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
+    /**
+     * Creates a {@link TestModel} that is NOT compatible with {@code baseModel}, choosing uniformly among the
+     * applicable kinds of incompatibility: task type, dimensions, similarity, element type, or the endpoint not
+     * existing. Setting-based perturbations (dimensions/similarity/element type) only apply to dense base models;
+     * a sparse base model has null dimensions/similarity/element type, so only task-type and does-not-exist apply.
+     *
+     * @return an incompatible model to register under {@code inferenceId}, or {@code null} to indicate the
+     *         caller should NOT register an endpoint (the does-not-exist case).
+     */
+    private static TestModel createIncompatibleModel(String inferenceId, TestModel baseModel) {
+        final TestModel.TestServiceSettings baseServiceSettings = baseModel.getServiceSettings();
+        final DenseVectorFieldMapper.ElementType baseElementType = baseServiceSettings.elementType();
 
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
+        List<IncompatibilityKind> applicable = new ArrayList<>();
+        applicable.add(IncompatibilityKind.TASK_TYPE);
+        applicable.add(IncompatibilityKind.DOES_NOT_EXIST);
+        if (baseModel.getTaskType() != TaskType.SPARSE_EMBEDDING) {
+            applicable.add(IncompatibilityKind.DIMENSIONS);
+            applicable.add(IncompatibilityKind.ELEMENT_TYPE);
+            // SIMILARITY only when the element type supports more than one option to perturb to
+            if (getSupportedSimilarities(baseElementType).size() > 1) {
+                applicable.add(IncompatibilityKind.SIMILARITY);
+            }
+        }
 
-        MinimalServiceSettings newModelSettings = MinimalServiceSettings.sparseEmbedding("new_service");
-        givenModelSettings(DEFAULT_EIS_ELSER_INFERENCE_ID, newModelSettings);
+        TaskType taskType = baseModel.getTaskType();
+        Integer dimensions = baseServiceSettings.dimensions();
+        SimilarityMeasure similarity = baseServiceSettings.similarity();
+        DenseVectorFieldMapper.ElementType elementType = baseElementType;
+        boolean returnNull = false;
 
-        Exception exc = expectThrows(
-            IllegalArgumentException.class,
-            () -> merge(mapperService, mapping(b -> b.startObject(fieldName).field("type", "semantic_text").endObject()))
-        );
+        switch (randomFrom(applicable)) {
+            case DOES_NOT_EXIST -> returnNull = true;
+            case TASK_TYPE -> {
+                taskType = randomValueOtherThan(taskType, () -> randomFrom(Set.of(TaskType.SPARSE_EMBEDDING, TaskType.TEXT_EMBEDDING)));
+                if (taskType == TaskType.TEXT_EMBEDDING) {
+                    // Sparse -> dense: populate required dense settings from a fresh random dense model
+                    TestModel randomDenseModel = TestModel.createRandomInstance(TaskType.TEXT_EMBEDDING);
+                    dimensions = randomDenseModel.getServiceSettings().dimensions();
+                    similarity = randomDenseModel.getServiceSettings().similarity();
+                    elementType = randomDenseModel.getServiceSettings().elementType();
+                } else {
+                    // Dense -> sparse: clear dense-only settings
+                    dimensions = null;
+                    similarity = null;
+                    elementType = null;
+                }
+            }
+            case DIMENSIONS -> dimensions = randomValueOtherThan(
+                dimensions,
+                () -> randomCompatibleDimensions(baseElementType, BBQ_MIN_DIMS * 2)
+            );
+            case SIMILARITY -> similarity = randomValueOtherThan(similarity, () -> randomFrom(getSupportedSimilarities(baseElementType)));
+            case ELEMENT_TYPE -> {
+                elementType = randomValueOtherThan(
+                    elementType,
+                    () -> randomFrom(
+                        DenseVectorFieldMapper.ElementType.FLOAT,
+                        DenseVectorFieldMapper.ElementType.BYTE,
+                        DenseVectorFieldMapper.ElementType.BIT
+                    )
+                );
+                // Regenerate dimensions and similarity compatible with the new element type
+                dimensions = randomCompatibleDimensions(elementType, BBQ_MIN_DIMS * 2);
+                similarity = randomFrom(getSupportedSimilarities(elementType));
+            }
+        }
 
-        assertThat(
-            exc.getMessage(),
-            containsString(
-                "Cannot update [semantic_text] field ["
-                    + fieldName
-                    + "] because inference endpoint ["
-                    + oldInferenceId
-                    + "] with model settings ["
-                    + previousModelSettings
-                    + "] is not compatible with new inference endpoint ["
-                    + DEFAULT_EIS_ELSER_INFERENCE_ID
-                    + "] with model settings ["
-                    + newModelSettings
-                    + "]"
-            )
+        if (returnNull) {
+            return null;
+        }
+
+        return buildModel(baseModel, inferenceId, taskType, elementType, dimensions, similarity);
+    }
+
+    private static TestModel buildModel(
+        TestModel baseModel,
+        String inferenceId,
+        TaskType taskType,
+        @Nullable DenseVectorFieldMapper.ElementType elementType,
+        @Nullable Integer dimensions,
+        @Nullable SimilarityMeasure similarity
+    ) {
+        return new TestModel(
+            inferenceId,
+            taskType,
+            baseModel.getConfigurations().getService(),
+            new TestModel.TestServiceSettings(baseModel.getServiceSettings().model(), dimensions, similarity, elementType),
+            baseModel.getTaskSettings(),
+            baseModel.getSecretSettings()
         );
     }
 
@@ -894,71 +1106,30 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         Mapper embeddingsFieldMapper = mapperService.mappingLookup().getMapper(getEmbeddingsFieldName(fieldName));
         switch (model.getTaskType()) {
             case SPARSE_EMBEDDING -> assertThat(embeddingsFieldMapper, is(instanceOf(SparseVectorFieldMapper.class)));
-            case TEXT_EMBEDDING -> assertTextEmbeddingsFieldMapperMatchesModel(embeddingsFieldMapper, model);
+            case TEXT_EMBEDDING -> {
+                SemanticTextFieldMapper semanticFieldMapper = getSemanticFieldMapper(mapperService, fieldName);
+                DenseVectorFieldMapper.ElementType expectedElementType = getExpectedElementType(
+                    mapperService.getIndexSettings().getIndexVersionCreated(),
+                    model.getServiceSettings().elementType(),
+                    semanticFieldMapper.fieldType().getIndexOptions()
+                );
+                assertTextEmbeddingsFieldMapperMatchesModel(embeddingsFieldMapper, model, expectedElementType);
+            }
             default -> throw new AssertionError("Unexpected task type [" + model.getTaskType() + "]");
         }
     }
 
-    private static void assertTextEmbeddingsFieldMapperMatchesModel(Mapper embeddingsFieldMapper, Model model) {
-        Function<SimilarityMeasure, DenseVectorFieldMapper.VectorSimilarity> convertToVectorSimilarity = s -> switch (s) {
-            case COSINE -> DenseVectorFieldMapper.VectorSimilarity.COSINE;
-            case DOT_PRODUCT -> DenseVectorFieldMapper.VectorSimilarity.DOT_PRODUCT;
-            case L2_NORM -> DenseVectorFieldMapper.VectorSimilarity.L2_NORM;
-        };
+    private static void assertTextEmbeddingsFieldMapperMatchesModel(
+        Mapper embeddingsFieldMapper,
+        Model model,
+        DenseVectorFieldMapper.ElementType expectedElementType
+    ) {
         assertThat(embeddingsFieldMapper, is(instanceOf(DenseVectorFieldMapper.class)));
         DenseVectorFieldMapper denseVectorFieldMapper = (DenseVectorFieldMapper) embeddingsFieldMapper;
         ServiceSettings modelServiceSettings = model.getConfigurations().getServiceSettings();
         assertThat(denseVectorFieldMapper.fieldType().getVectorDimensions(), equalTo(modelServiceSettings.dimensions()));
-        assertThat(denseVectorFieldMapper.fieldType().getElementType(), equalTo(modelServiceSettings.elementType()));
-        assertThat(
-            denseVectorFieldMapper.fieldType().getSimilarity(),
-            equalTo(convertToVectorSimilarity.apply(modelServiceSettings.similarity()))
-        );
-    }
-
-    private void testUpdateInferenceId_GivenDenseModelsWithDifferentSettings(
-        MinimalServiceSettings previousModelSettings,
-        MinimalServiceSettings newModelSettings
-    ) throws IOException {
-        assertThat(previousModelSettings.taskType(), equalTo(TaskType.TEXT_EMBEDDING));
-        assertThat(newModelSettings.taskType(), equalTo(TaskType.TEXT_EMBEDDING));
-        assertThat(newModelSettings, not(equalTo(previousModelSettings)));
-
-        String fieldName = randomAlphaOfLengthBetween(5, 15);
-        String oldInferenceId = "old_inference_id";
-        givenModelSettings(oldInferenceId, previousModelSettings);
-        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, oldInferenceId, previousModelSettings);
-
-        assertInferenceEndpoints(mapperService, fieldName, oldInferenceId, oldInferenceId);
-        assertSemanticTextField(mapperService, fieldName, true, null, null);
-
-        String newInferenceId = "new_inference_id";
-        givenModelSettings(newInferenceId, newModelSettings);
-
-        Exception exc = expectThrows(
-            IllegalArgumentException.class,
-            () -> merge(
-                mapperService,
-                mapping(b -> b.startObject(fieldName).field("type", "semantic_text").field("inference_id", newInferenceId).endObject())
-            )
-        );
-
-        assertThat(
-            exc.getMessage(),
-            containsString(
-                "Cannot update [semantic_text] field ["
-                    + fieldName
-                    + "] because inference endpoint ["
-                    + oldInferenceId
-                    + "] with model settings ["
-                    + previousModelSettings
-                    + "] is not compatible with new inference endpoint ["
-                    + newInferenceId
-                    + "] with model settings ["
-                    + newModelSettings
-                    + "]"
-            )
-        );
+        assertThat(denseVectorFieldMapper.fieldType().getElementType(), equalTo(expectedElementType));
+        assertThat(denseVectorFieldMapper.fieldType().getSimilarity(), equalTo(modelServiceSettings.similarity().vectorSimilarity()));
     }
 
     public void testDynamicUpdate() throws IOException {
@@ -1096,11 +1267,25 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         for (int depth = 1; depth < 5; depth++) {
             String inferenceId = "test_model";
             String fieldName = randomFieldName(depth);
-            IndexVersion indexVersion = SparseVectorFieldMapperTests.getIndexOptionsCompatibleIndexVersion();
+            IndexVersion indexVersion;
+            if (useLegacyFormat) {
+                // Must be in a range that supports both sparse vector index options and legacy format
+                indexVersion = randomBoolean()
+                    ? IndexVersionUtils.randomVersionBetween(
+                        IndexVersions.SPARSE_VECTOR_PRUNING_INDEX_OPTIONS_SUPPORT,
+                        IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_LEGACY_FORMAT_FORBIDDEN)
+                    )
+                    : IndexVersionUtils.randomVersionBetween(
+                        IndexVersions.SPARSE_VECTOR_PRUNING_INDEX_OPTIONS_SUPPORT_BACKPORT_8_X,
+                        IndexVersionUtils.getPreviousVersion(IndexVersions.UPGRADE_TO_LUCENE_10_0_0)
+                    );
+            } else {
+                indexVersion = SparseVectorFieldMapperTests.getIndexOptionsCompatibleIndexVersion();
+            }
             var sparseVectorIndexOptions = SparseVectorFieldTypeTests.randomSparseVectorIndexOptions();
             var expectedIndexOptions = sparseVectorIndexOptions == null
                 ? null
-                : new SemanticTextIndexOptions(SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, sparseVectorIndexOptions);
+                : new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, sparseVectorIndexOptions);
 
             // should not throw an exception
             MapperService mapper = createMapperServiceWithIndexVersion(mapping(b -> {
@@ -1133,8 +1318,13 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             );
 
             final ChunkingSettings chunkingSettings = generateRandomChunkingSettings(false);
-            IndexVersion indexVersion = SparseVectorFieldMapperTests.getIndexOptionsCompatibleIndexVersion();
-            final SemanticTextIndexOptions indexOptions = randomSemanticTextIndexOptions(TaskType.SPARSE_EMBEDDING);
+            IndexVersion indexVersion = useLegacyFormat
+                ? IndexVersionUtils.randomVersionBetween(
+                    IndexVersions.SPARSE_VECTOR_PRUNING_INDEX_OPTIONS_SUPPORT,
+                    IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_LEGACY_FORMAT_FORBIDDEN)
+                )
+                : SparseVectorFieldMapperTests.getIndexOptionsCompatibleIndexVersion();
+            final SemanticIndexOptions indexOptions = randomSemanticIndexOptions(TaskType.SPARSE_EMBEDDING);
             String fieldName = "field";
 
             MapperService mapperService = createMapperServiceWithIndexVersion(
@@ -1143,17 +1333,17 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
                 indexVersion
             );
             var expectedIndexOptions = (indexOptions == null)
-                ? new SemanticTextIndexOptions(
-                    SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
+                ? new SemanticIndexOptions(
+                    SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
                     SparseVectorFieldMapper.SparseVectorIndexOptions.getDefaultIndexOptions(indexVersion)
                 )
                 : indexOptions;
             assertSemanticTextField(mapperService, fieldName, false, chunkingSettings, expectedIndexOptions);
 
-            final SemanticTextIndexOptions newIndexOptions = randomSemanticTextIndexOptions(TaskType.SPARSE_EMBEDDING);
+            final SemanticIndexOptions newIndexOptions = randomSemanticIndexOptions(TaskType.SPARSE_EMBEDDING);
             expectedIndexOptions = (newIndexOptions == null)
-                ? new SemanticTextIndexOptions(
-                    SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
+                ? new SemanticIndexOptions(
+                    SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
                     SparseVectorFieldMapper.SparseVectorIndexOptions.getDefaultIndexOptions(indexVersion)
                 )
                 : newIndexOptions;
@@ -1226,8 +1416,9 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         String fieldName,
         boolean expectedModelSettings,
         ChunkingSettings expectedChunkingSettings,
-        SemanticTextIndexOptions expectedIndexOptions
+        SemanticIndexOptions expectedIndexOptions
     ) {
+        IndexVersion indexVersion = mapperService.getIndexSettings().getIndexVersionCreated();
         SemanticTextFieldMapper semanticFieldMapper = getSemanticFieldMapper(mapperService, fieldName);
 
         var fieldType = mapperService.fieldType(fieldName);
@@ -1284,10 +1475,29 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
                 case TEXT_EMBEDDING -> {
                     assertThat(embeddingsMapper, instanceOf(DenseVectorFieldMapper.class));
                     DenseVectorFieldMapper denseVectorFieldMapper = (DenseVectorFieldMapper) embeddingsMapper;
+
                     if (expectedIndexOptions != null) {
-                        assertEquals(expectedIndexOptions.indexOptions(), denseVectorFieldMapper.fieldType().getIndexOptions());
+                        IndexOptions expectedEmbeddingFieldIndexOptions = expectedIndexOptions.indexOptions();
+                        if (expectedEmbeddingFieldIndexOptions instanceof ExtendedDenseVectorIndexOptions edvio) {
+                            assertEquals(edvio.getBaseIndexOptions(), denseVectorFieldMapper.fieldType().getIndexOptions());
+                        } else {
+                            assertEquals(expectedEmbeddingFieldIndexOptions, denseVectorFieldMapper.fieldType().getIndexOptions());
+                        }
                     } else {
                         assertNull(denseVectorFieldMapper.fieldType().getIndexOptions());
+                    }
+
+                    MinimalServiceSettings modelSettings = semanticTextFieldType.getModelSettings();
+                    DenseVectorFieldMapper.ElementType expectedElementType = getExpectedElementType(
+                        indexVersion,
+                        modelSettings.elementType(),
+                        expectedIndexOptions
+                    );
+                    assertEquals(expectedElementType, denseVectorFieldMapper.fieldType().getElementType());
+                    assertEquals(modelSettings.dimensions().intValue(), denseVectorFieldMapper.fieldType().getVectorDimensions());
+                    if (modelSettings.similarity() != null && indexVersion.onOrAfter(NEW_SPARSE_VECTOR)) {
+                        // We don't set similarity on pre 8.11 indices
+                        assertEquals(modelSettings.similarity().vectorSimilarity(), denseVectorFieldMapper.fieldType().getSimilarity());
                     }
                 }
                 default -> throw new AssertionError("Invalid task type");
@@ -1349,7 +1559,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             });
 
             ChunkingSettings chunkingSettings = null; // Some chunking settings configs can produce different Lucene docs counts
-            SemanticTextIndexOptions indexOptions = randomSemanticTextIndexOptions(taskType);
+            SemanticIndexOptions indexOptions = randomSemanticIndexOptions(taskType);
             XContentBuilder mapping = mapping(b -> {
                 addSemanticTextMapping(
                     b,
@@ -1370,8 +1580,8 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             });
 
             var expectedIndexOptions = (indexOptions == null)
-                ? new SemanticTextIndexOptions(
-                    SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
+                ? new SemanticIndexOptions(
+                    SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
                     SparseVectorFieldMapper.SparseVectorIndexOptions.getDefaultIndexOptions(indexVersion)
                 )
                 : indexOptions;
@@ -1559,6 +1769,39 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         assertThat(ex.getCause().getMessage(), containsString("failed to parse field [model_settings]"));
     }
 
+    public void testMultimodalChunksNotSupported() throws Exception {
+        // Exclude dot product because the randomly generated embedding may not have unit length
+        Model model = TestModel.createRandomInstance(TaskType.EMBEDDING, List.of(SimilarityMeasure.DOT_PRODUCT));
+        MapperService mapperService = createMapperService(
+            mapping(b -> addSemanticTextMapping(b, "field", model.getInferenceEntityId(), null, null, null)),
+            useLegacyFormat
+        );
+
+        EmbeddingResults.Embedding<?> embedding = randomMultimodalEmbedding(model);
+        SemanticTextField semanticTextField = new SemanticTextField(
+            useLegacyFormat,
+            "field",
+            null,
+            new SemanticTextField.InferenceResult(
+                model.getInferenceEntityId(),
+                new MinimalServiceSettings(model),
+                null,
+                Map.of("field", List.of(new SemanticTextField.Chunk(0, embedding.toBytesRef(XContentType.JSON.xContent()))))
+            ),
+            XContentType.JSON
+        );
+
+        String expectedMessage = useLegacyFormat
+            ? "[chunks] text doesn't support values of type: VALUE_NULL"
+            : "[semantic_text] field [field] does not support multimodal values";
+        DocumentParsingException e = assertThrows(
+            DocumentParsingException.class,
+            () -> mapperService.documentMapper()
+                .parse(semanticTextInferenceSource(useLegacyFormat, b -> b.field("field", semanticTextField)))
+        );
+        assertThat(rootCause(e).getMessage(), containsString(expectedMessage));
+    }
+
     public void testDenseVectorElementType() throws IOException {
         final String fieldName = "field";
         final String inferenceId = "test_service";
@@ -1593,6 +1836,32 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             )
         );
         assertMapperService.accept(byteMapperService, DenseVectorFieldMapper.ElementType.BYTE);
+
+        MapperService bitMapperService = mapperServiceForFieldWithModelSettings(
+            fieldName,
+            inferenceId,
+            new MinimalServiceSettings(
+                "my-service",
+                TaskType.TEXT_EMBEDDING,
+                1024,
+                SimilarityMeasure.L2_NORM,
+                DenseVectorFieldMapper.ElementType.BIT
+            )
+        );
+        assertMapperService.accept(bitMapperService, DenseVectorFieldMapper.ElementType.BIT);
+
+        MapperService bfloat16MapperService = mapperServiceForFieldWithModelSettings(
+            fieldName,
+            inferenceId,
+            new MinimalServiceSettings(
+                "my-service",
+                TaskType.TEXT_EMBEDDING,
+                1024,
+                SimilarityMeasure.COSINE,
+                DenseVectorFieldMapper.ElementType.BFLOAT16
+            )
+        );
+        assertMapperService.accept(bfloat16MapperService, DenseVectorFieldMapper.ElementType.BFLOAT16);
     }
 
     public void testSettingAndUpdatingChunkingSettings() throws IOException {
@@ -1602,7 +1871,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         );
 
         final ChunkingSettings chunkingSettings = generateRandomChunkingSettings(false);
-        final SemanticTextIndexOptions indexOptions = randomSemanticTextIndexOptions(TaskType.SPARSE_EMBEDDING);
+        final SemanticIndexOptions indexOptions = randomSemanticIndexOptions(TaskType.SPARSE_EMBEDDING);
         String fieldName = "field";
 
         MapperService mapperService = createMapperService(
@@ -1629,7 +1898,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         );
 
         ChunkingSettings chunkingSettings = generateRandomChunkingSettings(false);
-        SemanticTextIndexOptions indexOptions = randomSemanticTextIndexOptions(taskType);
+        SemanticIndexOptions indexOptions = randomSemanticIndexOptions(taskType);
         SemanticTextField randomSemanticText = randomSemanticText(
             useLegacyFormat,
             "field",
@@ -1798,11 +2067,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
 
         SourceToParse sourceToParse = new SourceToParse("test", BytesReference.bytes(builder), XContentType.JSON);
         ParsedDocument parsedDocument = mapperService.documentMapper().parse(sourceToParse);
-        mapperService.merge(
-            "_doc",
-            parsedDocument.dynamicMappingsUpdate().toCompressedXContent(),
-            MapperService.MergeReason.MAPPING_UPDATE
-        );
+        mapperService.merge("_doc", parsedDocument.dynamicMappingsUpdate(), MapperService.MergeReason.MAPPING_UPDATE);
         return mapperService;
     }
 
@@ -1846,200 +2111,157 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         assertThat(existsQuery, instanceOf(ESToParentBlockJoinQuery.class));
     }
 
-    private static DenseVectorFieldMapper.DenseVectorIndexOptions defaultDenseVectorIndexOptions() {
-        // These are the default index options for dense_vector fields, and used for semantic_text fields incompatible with BBQ.
-        int m = Lucene99HnswVectorsFormat.DEFAULT_MAX_CONN;
-        int efConstruction = Lucene99HnswVectorsFormat.DEFAULT_BEAM_WIDTH;
-        return new DenseVectorFieldMapper.Int8HnswIndexOptions(m, efConstruction, null, false, null);
+    public void testDynamicUpdateDiscardsEndpointMetadata() throws IOException {
+        final String fieldName = "semantic";
+        final String inferenceId = "test_service";
+        final EndpointMetadata endpointMetadata = EndpointMetadataTests.randomNonEmptyInstance();
+        final MinimalServiceSettings modelSettings = new MinimalServiceSettings(
+            "test-service",
+            TaskType.SPARSE_EMBEDDING,
+            null,
+            null,
+            null,
+            endpointMetadata
+        );
+
+        // mapperServiceForFieldWithModelSettings triggers a dynamic mapping update
+        MapperService mapperService = mapperServiceForFieldWithModelSettings(fieldName, inferenceId, modelSettings);
+        SemanticTextFieldMapper mapper = getSemanticFieldMapper(mapperService, fieldName);
+        assertThat(mapper.fieldType().getModelSettings().endpointMetadata(), equalTo(EndpointMetadata.EMPTY_INSTANCE));
     }
 
-    private static SemanticTextIndexOptions defaultDenseVectorSemanticIndexOptions() {
-        return new SemanticTextIndexOptions(SemanticTextIndexOptions.SupportedIndexOptions.DENSE_VECTOR, defaultDenseVectorIndexOptions());
+    public void testMappingWithEndpointMetadata() throws IOException {
+        final EndpointMetadata endpointMetadata = EndpointMetadataTests.randomNonEmptyInstance();
+        final MinimalServiceSettings modelSettingsWithMetadata = new MinimalServiceSettings(
+            "test-service",
+            TaskType.SPARSE_EMBEDDING,
+            null,
+            null,
+            null,
+            endpointMetadata
+        );
+
+        MapperService originalMapperService = createMapperService(fieldMapping(b -> {
+            b.field("type", "semantic_text");
+            b.field("inference_id", "test_service");
+            b.field("model_settings", modelSettingsWithMetadata);
+        }), useLegacyFormat);
+        SemanticTextFieldMapper originalMapper = getSemanticFieldMapper(originalMapperService, "field");
+        assertThat(originalMapper.fieldType().getModelSettings().endpointMetadata(), equalTo(endpointMetadata));
+
+        // An XContent serialization cycle should remove the endpoint metadata
+        CompressedXContent mappingSource = originalMapperService.documentMapper().mappingSource();
+        MapperService parsedMapperService = createMapperService(mapping(b -> {}), useLegacyFormat);
+        parsedMapperService.merge("_doc", mappingSource, MapperService.MergeReason.MAPPING_UPDATE);
+
+        SemanticTextFieldMapper parsedMapper = getSemanticFieldMapper(parsedMapperService, "field");
+        assertThat(parsedMapper.fieldType().getModelSettings().endpointMetadata(), equalTo(EndpointMetadata.EMPTY_INSTANCE));
+    }
+
+    private static SemanticIndexOptions defaultDenseVectorSemanticIndexOptions(
+        IndexVersion indexVersionCreated,
+        License.OperationMode operationMode,
+        Integer dims,
+        DenseVectorFieldMapper.ElementType elementType,
+        boolean experimentalFeaturesEnabled
+    ) {
+        return new SemanticIndexOptions(
+            SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
+            defaultDenseVectorIndexOptions(
+                indexVersionCreated,
+                operationMode == License.OperationMode.ENTERPRISE,
+                true,
+                dims,
+                elementType,
+                experimentalFeaturesEnabled
+            )
+        );
     }
 
     private static DenseVectorFieldMapper.DenseVectorIndexOptions defaultBbqHnswDenseVectorIndexOptions() {
         int m = Lucene99HnswVectorsFormat.DEFAULT_MAX_CONN;
         int efConstruction = Lucene99HnswVectorsFormat.DEFAULT_BEAM_WIDTH;
         DenseVectorFieldMapper.RescoreVector rescoreVector = new DenseVectorFieldMapper.RescoreVector(DEFAULT_RESCORE_OVERSAMPLE);
-        return new DenseVectorFieldMapper.BBQHnswIndexOptions(m, efConstruction, false, rescoreVector);
+        return new DenseVectorFieldMapper.BBQHnswIndexOptions(m, efConstruction, false, rescoreVector, -1);
     }
 
-    private static SemanticTextIndexOptions defaultBbqHnswSemanticTextIndexOptions() {
-        return new SemanticTextIndexOptions(
-            SemanticTextIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
-            defaultBbqHnswDenseVectorIndexOptions()
-        );
+    private static SemanticIndexOptions defaultBbqHnswSemanticIndexOptions() {
+        return new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR, defaultBbqHnswDenseVectorIndexOptions());
     }
 
-    private static SemanticTextIndexOptions defaultSparseVectorIndexOptions(IndexVersion indexVersion) {
-        return new SemanticTextIndexOptions(
-            SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
+    private static SemanticIndexOptions defaultSparseVectorIndexOptions(IndexVersion indexVersion) {
+        return new SemanticIndexOptions(
+            SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
             SparseVectorFieldMapper.SparseVectorIndexOptions.getDefaultIndexOptions(indexVersion)
         );
     }
 
     public void testDefaultIndexOptions() throws IOException {
+        for (int i = 0; i < 200; i++) {
+            final Model model = TestModel.createRandomInstance();
+            final IndexVersion indexVersion = useLegacyFormat == false && randomBoolean()
+                ? IndexVersion.current()
+                : SemanticInferenceMetadataFieldsMapperTests.getRandomCompatibleIndexVersion(useLegacyFormat);
 
-        // We default to BBQ for eligible dense vectors
-        var mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "text_embedding");
-            b.field("dimensions", 100);
-            b.field("similarity", "cosine");
-            b.field("element_type", "float");
-            b.endObject();
-        }), useLegacyFormat, IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BBQ);
-        assertSemanticTextField(mapperService, "field", true, null, defaultBbqHnswSemanticTextIndexOptions());
+            final TaskType taskType = model.getTaskType();
+            final DenseVectorFieldMapper.ElementType elementType = model.getServiceSettings().elementType();
+            final Integer dimensions = model.getServiceSettings().dimensions();
+            final SimilarityMeasure similarity = model.getServiceSettings().similarity();
 
-        // Element types that are incompatible with BBQ will continue to use dense_vector defaults
-        mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "text_embedding");
-            b.field("dimensions", 100);
-            b.field("similarity", "cosine");
-            b.field("element_type", "byte");
-            b.endObject();
-        }), useLegacyFormat, IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BBQ);
-        assertSemanticTextField(mapperService, "field", true, null, null);
+            MapperService mapperService = createMapperServiceWithIndexVersion(fieldMapping(b -> {
+                b.field("type", "semantic_text");
+                b.field("inference_id", "another_inference_id");
+                b.startObject("model_settings");
+                b.field("task_type", taskType.toString());
+                if (taskType == TaskType.TEXT_EMBEDDING) {
+                    b.field("dimensions", dimensions);
+                    b.field("similarity", similarity.toString());
+                    b.field("element_type", elementType.toString());
+                }
+                b.endObject();
+            }), useLegacyFormat, indexVersion);
 
-        // A dim count of 10 is too small to support BBQ, so we continue to use dense_vector defaults
-        mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "text_embedding");
-            b.field("dimensions", 10);
-            b.field("similarity", "cosine");
-            b.field("element_type", "float");
-            b.endObject();
-        }), useLegacyFormat, IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BBQ);
-        assertSemanticTextField(
-            mapperService,
-            "field",
-            true,
-            null,
-            new SemanticTextIndexOptions(SemanticTextIndexOptions.SupportedIndexOptions.DENSE_VECTOR, defaultDenseVectorIndexOptions())
-        );
-
-        // If we explicitly set index options, we respect those over the defaults
-        mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "text_embedding");
-            b.field("dimensions", 100);
-            b.field("similarity", "cosine");
-            b.field("element_type", "float");
-            b.endObject();
-            b.startObject("index_options");
-            b.startObject("dense_vector");
-            b.field("type", "int4_hnsw");
-            b.field("m", 25);
-            b.field("ef_construction", 100);
-            b.endObject();
-            b.endObject();
-        }), useLegacyFormat, IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BBQ);
-        assertSemanticTextField(
-            mapperService,
-            "field",
-            true,
-            null,
-            new SemanticTextIndexOptions(
-                SemanticTextIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
-                new DenseVectorFieldMapper.Int4HnswIndexOptions(25, 100, null, false, null)
-            )
-        );
-
-        // Previous index versions do not set BBQ index options
-        mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "text_embedding");
-            b.field("dimensions", 100);
-            b.field("similarity", "cosine");
-            b.field("element_type", "float");
-            b.endObject();
-        }),
-            useLegacyFormat,
-            IndexVersions.INFERENCE_METADATA_FIELDS,
-            IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BBQ)
-        );
-        assertSemanticTextField(mapperService, "field", true, null, defaultDenseVectorSemanticIndexOptions());
-
-        // 8.x index versions that use backported default BBQ set default BBQ index options as expected
-        mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "text_embedding");
-            b.field("dimensions", 100);
-            b.field("similarity", "cosine");
-            b.field("element_type", "float");
-            b.endObject();
-        }),
-            useLegacyFormat,
-            IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BBQ_BACKPORT_8_X,
-            IndexVersionUtils.getPreviousVersion(IndexVersions.UPGRADE_TO_LUCENE_10_0_0)
-        );
-        assertSemanticTextField(mapperService, "field", true, null, defaultBbqHnswSemanticTextIndexOptions());
-
-        // Previous 8.x index versions do not set BBQ index options
-        mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "text_embedding");
-            b.field("dimensions", 100);
-            b.field("similarity", "cosine");
-            b.field("element_type", "float");
-            b.endObject();
-        }),
-            useLegacyFormat,
-            IndexVersions.INFERENCE_METADATA_FIELDS_BACKPORT,
-            IndexVersionUtils.getPreviousVersion(IndexVersions.SEMANTIC_TEXT_DEFAULTS_TO_BBQ_BACKPORT_8_X)
-        );
-        assertSemanticTextField(mapperService, "field", true, null, defaultDenseVectorSemanticIndexOptions());
-
-        mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "sparse_embedding");
-            b.endObject();
-        }),
-            useLegacyFormat,
-            IndexVersionUtils.getPreviousVersion(IndexVersions.SPARSE_VECTOR_PRUNING_INDEX_OPTIONS_SUPPORT),
-            IndexVersions.SPARSE_VECTOR_PRUNING_INDEX_OPTIONS_SUPPORT
-        );
-
-        assertSemanticTextField(
-            mapperService,
-            "field",
-            true,
-            null,
-            defaultSparseVectorIndexOptions(mapperService.getIndexSettings().getIndexVersionCreated())
-        );
+            boolean experimentalFeatures = DENSE_VECTOR_EXPERIMENTAL_FEATURES_SETTING.get(mapperService.getIndexSettings().getSettings());
+            assertSemanticTextField(
+                mapperService,
+                "field",
+                true,
+                null,
+                getExpectedDefaultIndexOptions(taskType, elementType, dimensions, indexVersion, experimentalFeatures)
+            );
+        }
     }
 
-    public void testSparseVectorIndexOptionsDefaultsBeforeSupport() throws IOException {
-        var mapperService = createMapperService(fieldMapping(b -> {
-            b.field("type", "semantic_text");
-            b.field("inference_id", "another_inference_id");
-            b.startObject("model_settings");
-            b.field("task_type", "sparse_embedding");
-            b.endObject();
-        }),
-            useLegacyFormat,
-            IndexVersions.INFERENCE_METADATA_FIELDS,
-            IndexVersionUtils.getPreviousVersion(IndexVersions.SPARSE_VECTOR_PRUNING_INDEX_OPTIONS_SUPPORT)
-        );
-
-        assertSemanticTextField(mapperService, "field", true, null, null);
+    private SemanticIndexOptions getExpectedDefaultIndexOptions(
+        TaskType taskType,
+        DenseVectorFieldMapper.ElementType elementType,
+        Integer dimensions,
+        IndexVersion indexVersion,
+        boolean experimentalFeatures
+    ) {
+        return switch (taskType) {
+            case TEXT_EMBEDDING -> {
+                boolean floatFamilyElementType = elementType == DenseVectorFieldMapper.ElementType.FLOAT
+                    || elementType == DenseVectorFieldMapper.ElementType.BFLOAT16;
+                if (floatFamilyElementType
+                    && SemanticTextFieldMapper.setExplicitIndexOptionsForSemanticText(indexVersion)
+                    && dimensions >= DenseVectorFieldMapper.BBQ_MIN_DIMS) {
+                    yield defaultBbqHnswSemanticIndexOptions();
+                } else if (floatFamilyElementType) {
+                    yield defaultDenseVectorSemanticIndexOptions(
+                        indexVersion,
+                        operationMode,
+                        dimensions,
+                        elementType,
+                        experimentalFeatures
+                    );
+                } else {
+                    yield null;
+                }
+            }
+            case SPARSE_EMBEDDING -> defaultSparseVectorIndexOptions(indexVersion);
+            default -> throw new AssertionError("Unexpected task type [" + taskType + "]");
+        };
     }
 
     public void testSpecifiedDenseVectorIndexOptions() throws IOException {
@@ -2059,7 +2281,6 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             b.field("type", "int4_hnsw");
             b.field("m", 20);
             b.field("ef_construction", 90);
-            b.field("confidence_interval", 0.4);
             b.endObject();
             b.endObject();
         }), useLegacyFormat, IndexVersions.INFERENCE_METADATA_FIELDS_BACKPORT);
@@ -2068,9 +2289,9 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             "field",
             true,
             null,
-            new SemanticTextIndexOptions(
-                SemanticTextIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
-                new DenseVectorFieldMapper.Int4HnswIndexOptions(20, 90, 0.4f, false, null)
+            new SemanticIndexOptions(
+                SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
+                new DenseVectorFieldMapper.Int4HnswIndexOptions(20, 90, false, null, -1)
             )
         );
 
@@ -2095,9 +2316,9 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             "field",
             true,
             null,
-            new SemanticTextIndexOptions(
-                SemanticTextIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
-                new DenseVectorFieldMapper.Int4HnswIndexOptions(16, 100, 0f, false, null)
+            new SemanticIndexOptions(
+                SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
+                new DenseVectorFieldMapper.Int4HnswIndexOptions(16, 100, false, null, -1)
             )
         );
 
@@ -2152,6 +2373,118 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         assertThat(e.getMessage(), containsString("Unsupported index options type invalid"));
     }
 
+    public void testSetElementTypeInDenseVectorIndexOptions() throws IOException {
+        // Specifying the element type prevents defaulting to bfloat16
+        IndexVersion indexVersion = SemanticInferenceMetadataFieldsMapperTests.getRandomCompatibleIndexVersion(useLegacyFormat);
+        var mapperService = createMapperServiceWithIndexVersion(fieldMapping(b -> {
+            b.field("type", "semantic_text");
+            b.field("inference_id", "another_inference_id");
+            b.startObject("model_settings");
+            b.field("task_type", "text_embedding");
+            b.field("dimensions", 100);
+            b.field("similarity", "cosine");
+            b.field("element_type", "float");
+            b.endObject();
+            b.startObject("index_options");
+            b.startObject("dense_vector");
+            b.field("element_type", "float");
+            b.endObject();
+            b.endObject();
+        }), useLegacyFormat, indexVersion);
+
+        SemanticIndexOptions expectedDefaultIndexOptions = getExpectedDefaultIndexOptions(
+            TaskType.TEXT_EMBEDDING,
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            100,
+            indexVersion,
+            DENSE_VECTOR_EXPERIMENTAL_FEATURES_SETTING.get(mapperService.getIndexSettings().getSettings())
+        );
+        DenseVectorFieldMapper.DenseVectorIndexOptions expectedDenseVectorIndexOptions = expectedDefaultIndexOptions != null
+            ? (DenseVectorFieldMapper.DenseVectorIndexOptions) expectedDefaultIndexOptions.indexOptions()
+            : null;
+
+        assertSemanticTextField(
+            mapperService,
+            "field",
+            true,
+            null,
+            new SemanticIndexOptions(
+                SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
+                new ExtendedDenseVectorIndexOptions(expectedDenseVectorIndexOptions, DenseVectorFieldMapper.ElementType.FLOAT)
+            )
+        );
+
+        // Can use element type in combination with type
+        mapperService = createMapperServiceWithIndexVersion(fieldMapping(b -> {
+            b.field("type", "semantic_text");
+            b.field("inference_id", "another_inference_id");
+            b.startObject("model_settings");
+            b.field("task_type", "text_embedding");
+            b.field("dimensions", 100);
+            b.field("similarity", "cosine");
+            b.field("element_type", "float");
+            b.endObject();
+            b.startObject("index_options");
+            b.startObject("dense_vector");
+            b.field("element_type", "float");
+            b.field("type", "int4_hnsw");
+            b.field("m", 20);
+            b.field("ef_construction", 90);
+            b.endObject();
+            b.endObject();
+        }), useLegacyFormat, indexVersion);
+
+        assertSemanticTextField(
+            mapperService,
+            "field",
+            true,
+            null,
+            new SemanticIndexOptions(
+                SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR,
+                new ExtendedDenseVectorIndexOptions(
+                    new DenseVectorFieldMapper.Int4HnswIndexOptions(20, 90, false, null, -1),
+                    DenseVectorFieldMapper.ElementType.FLOAT
+                )
+            )
+        );
+    }
+
+    public void testInvalidElementTypeOverride() {
+        for (int i = 0; i < 10; i++) {
+            final Model model = TestModel.createRandomInstance(TaskType.TEXT_EMBEDDING);
+            final DenseVectorFieldMapper.ElementType modelElementType = model.getServiceSettings().elementType();
+
+            final DenseVectorFieldMapper.ElementType overrideElementType;
+            if (modelElementType == DenseVectorFieldMapper.ElementType.FLOAT) {
+                overrideElementType = randomFrom(DenseVectorFieldMapper.ElementType.BYTE, DenseVectorFieldMapper.ElementType.BIT);
+            } else {
+                overrideElementType = randomValueOtherThan(modelElementType, () -> randomFrom(DenseVectorFieldMapper.ElementType.values()));
+            }
+
+            MapperParsingException e = expectThrows(MapperParsingException.class, () -> createMapperService(fieldMapping(b -> {
+                b.field("type", "semantic_text");
+                b.field("inference_id", "test_inference_id");
+                b.startObject("model_settings");
+                b.field("task_type", model.getTaskType().toString());
+                b.field("dimensions", model.getServiceSettings().dimensions());
+                b.field("similarity", model.getServiceSettings().similarity().toString());
+                b.field("element_type", modelElementType.toString());
+                b.endObject();
+                b.startObject("index_options");
+                b.startObject("dense_vector");
+                b.field("element_type", overrideElementType.toString());
+                b.endObject();
+                b.endObject();
+            }), useLegacyFormat));
+            assertThat(
+                e.getMessage(),
+                containsString(
+                    "Model element type [" + modelElementType + "] is incompatible with element type override [" + overrideElementType + "]"
+                )
+            );
+        }
+    }
+
     public void testSpecificSparseVectorIndexOptions() throws IOException {
         for (int i = 0; i < 10; i++) {
             SparseVectorFieldMapper.SparseVectorIndexOptions testIndexOptions = randomSparseVectorIndexOptions(false);
@@ -2172,7 +2505,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
                 "field",
                 true,
                 null,
-                new SemanticTextIndexOptions(SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, testIndexOptions)
+                new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, testIndexOptions)
             );
         }
     }
@@ -2216,38 +2549,87 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
             }
             b.endObject();
         }), useLegacyFormat, IndexVersions.INFERENCE_METADATA_FIELDS_BACKPORT));
-        var innerClause = e.getCause().getCause().getCause().getCause();
+        var innerClause = e.getCause().getCause().getCause();
         assertThat(innerClause.getMessage(), containsString("[tokens_freq_ratio_threshold] must be between [1] and [100], got 1000.0"));
     }
 
-    public static SemanticTextIndexOptions randomSemanticTextIndexOptions() {
-        TaskType taskType = randomFrom(TaskType.SPARSE_EMBEDDING, TaskType.TEXT_EMBEDDING);
-        return randomSemanticTextIndexOptions(taskType);
+    @Override
+    public void testSupportedIndexVersions() throws IOException {
+
+        // Add model settings via extendedSettings to trigger programmatic
+        // creation of SparseVectorFieldMapper and DenseVectorFieldMapper
+
+        Model sparseModel = TestModel.createRandomInstance(TaskType.SPARSE_EMBEDDING);
+        Map<String, Object> sparseExtensions = Map.of(
+            "inference_id",
+            sparseModel.getInferenceEntityId(),
+            "model_settings",
+            Map.of("task_type", TaskType.SPARSE_EMBEDDING.toString())
+        );
+
+        Model denseModel = TestModel.createRandomInstance(TaskType.TEXT_EMBEDDING);
+        Map<String, Object> denseExtensions = Map.of(
+            "inference_id",
+            denseModel.getInferenceEntityId(),
+            "model_settings",
+            Map.of(
+                "task_type",
+                TaskType.TEXT_EMBEDDING.toString(),
+                "dimensions",
+                denseModel.getServiceSettings().dimensions(),
+                "similarity",
+                denseModel.getServiceSettings().similarity(),
+                "element_type",
+                denseModel.getServiceSettings().elementType()
+            )
+        );
+
+        Set<IndexVersion> supportedVersions = getSupportedVersions();
+
+        for (int i = 0; i < Math.min(supportedVersions.size(), 100); i++) {
+            IndexVersion indexVersion = randomFrom(supportedVersions);
+            MapperService denseMapperService = createMapperService(indexVersion, fieldMapping(b -> extendedMapping(b, denseExtensions)));
+            MapperService sparseMapperService = createMapperService(indexVersion, fieldMapping(b -> extendedMapping(b, sparseExtensions)));
+        }
     }
 
-    public static SemanticTextIndexOptions randomSemanticTextIndexOptions(TaskType taskType) {
+    public static SemanticIndexOptions randomSemanticIndexOptions() {
+        TaskType taskType = randomFrom(TaskType.SPARSE_EMBEDDING, TaskType.TEXT_EMBEDDING);
+        return randomSemanticIndexOptions(taskType);
+    }
+
+    public static SemanticIndexOptions randomSemanticIndexOptions(TaskType taskType) {
         if (taskType == TaskType.TEXT_EMBEDDING) {
             return randomBoolean()
                 ? null
-                : new SemanticTextIndexOptions(SemanticTextIndexOptions.SupportedIndexOptions.DENSE_VECTOR, randomIndexOptionsAll());
+                : new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.DENSE_VECTOR, randomIndexOptionsAll());
         }
 
         if (taskType == TaskType.SPARSE_EMBEDDING) {
             return randomBoolean()
                 ? null
-                : new SemanticTextIndexOptions(
-                    SemanticTextIndexOptions.SupportedIndexOptions.SPARSE_VECTOR,
-                    randomSparseVectorIndexOptions(false)
-                );
+                : new SemanticIndexOptions(SemanticIndexOptions.SupportedIndexOptions.SPARSE_VECTOR, randomSparseVectorIndexOptions(false));
         }
 
         return null;
     }
 
-    @Override
-    protected void assertExistsQuery(MappedFieldType fieldType, Query query, LuceneDocument fields) {
-        // Until a doc is indexed, the query is rewritten as match no docs
-        assertThat(query, instanceOf(MatchNoDocsQuery.class));
+    private static DenseVectorFieldMapper.ElementType getExpectedElementType(
+        IndexVersion indexVersion,
+        DenseVectorFieldMapper.ElementType modelElementType,
+        @Nullable SemanticIndexOptions semanticIndexOptions
+    ) {
+        if (semanticIndexOptions != null && semanticIndexOptions.indexOptions() instanceof ExtendedDenseVectorIndexOptions edvio) {
+            if (edvio.getElementType() != null) {
+                return edvio.getElementType();
+            }
+        }
+
+        DenseVectorFieldMapper.ElementType expectedElementType = modelElementType;
+        if (indexVersion.onOrAfter(SEMANTIC_TEXT_DEFAULTS_TO_BFLOAT16) && expectedElementType == DenseVectorFieldMapper.ElementType.FLOAT) {
+            expectedElementType = DenseVectorFieldMapper.ElementType.BFLOAT16;
+        }
+        return expectedElementType;
     }
 
     private static void addSemanticTextMapping(
@@ -2256,7 +2638,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         String inferenceId,
         String searchInferenceId,
         ChunkingSettings chunkingSettings,
-        SemanticTextIndexOptions indexOptions
+        SemanticIndexOptions indexOptions
     ) throws IOException {
         mappingBuilder.startObject(fieldName);
         mappingBuilder.field("type", SemanticTextFieldMapper.CONTENT_TYPE);
@@ -2328,7 +2710,7 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         );
     }
 
-    private static SourceToParse semanticTextInferenceSource(boolean useLegacyFormat, CheckedConsumer<XContentBuilder, IOException> build)
+    private SourceToParse semanticTextInferenceSource(boolean useLegacyFormat, CheckedConsumer<XContentBuilder, IOException> build)
         throws IOException {
         return source(b -> {
             if (useLegacyFormat == false) {
@@ -2370,13 +2752,11 @@ public class SemanticTextFieldMapperTests extends MapperTestCase {
         when(globalModelRegistry.getMinimalServiceSettings(inferenceId)).thenReturn(modelSettings);
     }
 
-    @Override
-    protected List<SortShortcutSupport> getSortShortcutSupport() {
-        return List.of();
-    }
-
-    @Override
-    protected boolean supportsDocValuesSkippers() {
-        return false;
+    private static Throwable rootCause(Throwable t) {
+        Throwable cause = t;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 }

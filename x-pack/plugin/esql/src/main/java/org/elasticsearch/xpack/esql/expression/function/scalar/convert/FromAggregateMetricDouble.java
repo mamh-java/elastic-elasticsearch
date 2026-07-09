@@ -16,8 +16,8 @@ import org.elasticsearch.compute.data.AggregateMetricDoubleBlockBuilder;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
-import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.index.mapper.blockloader.BlockLoaderFunctionConfig;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
@@ -29,6 +29,7 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.core.type.UnionTypeEsField;
 import org.elasticsearch.xpack.esql.expression.function.FunctionInfo;
 import org.elasticsearch.xpack.esql.expression.function.Param;
 import org.elasticsearch.xpack.esql.expression.function.blockloader.BlockLoaderExpression;
@@ -45,6 +46,7 @@ import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isTyp
 import static org.elasticsearch.xpack.esql.core.type.DataType.AGGREGATE_METRIC_DOUBLE;
 import static org.elasticsearch.xpack.esql.core.type.DataType.DOUBLE;
 import static org.elasticsearch.xpack.esql.core.type.DataType.INTEGER;
+import static org.elasticsearch.xpack.esql.core.type.DataType.LONG;
 import static org.elasticsearch.xpack.esql.core.type.DataType.NULL;
 
 public class FromAggregateMetricDouble extends EsqlScalarFunction implements ConvertFunction, BlockLoaderExpression {
@@ -57,12 +59,16 @@ public class FromAggregateMetricDouble extends EsqlScalarFunction implements Con
     private final Expression field;
     private final Expression subfieldIndex;
 
-    @FunctionInfo(returnType = { "long", "double" }, description = "Convert aggregate double metric to a block of a single subfield.")
+    @FunctionInfo(
+        returnType = { "long", "double" },
+        briefSummary = "Converts an aggregate double metric to a single subfield block.",
+        description = "Convert aggregate double metric to a block of a single subfield."
+    )
     public FromAggregateMetricDouble(
         Source source,
         @Param(
             name = "aggregate_metric_double",
-            type = { "aggregate_metric_double" },
+            type = { "aggregate_metric_double", "int", "double", "long" },
             description = "Aggregate double metric to convert."
         ) Expression field,
         @Param(name = "subfieldIndex", type = "int", description = "Index of subfield") Expression subfieldIndex
@@ -132,9 +138,9 @@ public class FromAggregateMetricDouble extends EsqlScalarFunction implements Con
     }
 
     @Override
-    public EvalOperator.ExpressionEvaluator.Factory toEvaluator(ToEvaluator toEvaluator) {
+    public ExpressionEvaluator.Factory toEvaluator(ToEvaluator toEvaluator) {
         var fieldEvaluator = toEvaluator.apply(field);
-        return new EvalOperator.ExpressionEvaluator.Factory() {
+        return new ExpressionEvaluator.Factory() {
 
             @Override
             public String toString() {
@@ -142,17 +148,15 @@ public class FromAggregateMetricDouble extends EsqlScalarFunction implements Con
             }
 
             @Override
-            public EvalOperator.ExpressionEvaluator get(DriverContext context) {
-                final EvalOperator.ExpressionEvaluator eval = fieldEvaluator.get(context);
+            public ExpressionEvaluator get(DriverContext context) {
+                final ExpressionEvaluator eval = fieldEvaluator.get(context);
                 final int subFieldIndex = ((Number) subfieldIndex.fold(FoldContext.small())).intValue();
                 return new Evaluator(context.blockFactory(), eval, subFieldIndex);
             }
         };
     }
 
-    private record Evaluator(BlockFactory blockFactory, EvalOperator.ExpressionEvaluator eval, int subFieldIndex)
-        implements
-            EvalOperator.ExpressionEvaluator {
+    private record Evaluator(BlockFactory blockFactory, ExpressionEvaluator eval, int subFieldIndex) implements ExpressionEvaluator {
 
         private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(Evaluator.class);
 
@@ -194,12 +198,14 @@ public class FromAggregateMetricDouble extends EsqlScalarFunction implements Con
 
     @Override
     public Set<DataType> supportedTypes() {
-        return Set.of(AGGREGATE_METRIC_DOUBLE);
+        return Set.of(AGGREGATE_METRIC_DOUBLE, INTEGER, LONG, DOUBLE);
     }
 
     @Override
     public PushedBlockLoaderExpression tryPushToFieldLoading(SearchStats stats) {
-        if (field() instanceof FieldAttribute f && f.dataType() == AGGREGATE_METRIC_DOUBLE) {
+        if (field() instanceof FieldAttribute f
+            && f.dataType() == AGGREGATE_METRIC_DOUBLE
+            && (f.field() instanceof UnionTypeEsField) == false) {
             var folded = subfieldIndex.fold(FoldContext.small());
             if (folded == null) {
                 throw new IllegalArgumentException("Subfield Index was null");
@@ -210,6 +216,7 @@ public class FromAggregateMetricDouble extends EsqlScalarFunction implements Con
                 case MAX -> BlockLoaderFunctionConfig.Function.AMD_MAX;
                 case SUM -> BlockLoaderFunctionConfig.Function.AMD_SUM;
                 case COUNT -> BlockLoaderFunctionConfig.Function.AMD_COUNT;
+                case DEFAULT -> BlockLoaderFunctionConfig.Function.AMD_DEFAULT;
                 case null -> throw new IllegalArgumentException("Received invalid subfield index [" + subfield + "].");
             };
             return new PushedBlockLoaderExpression(f, new BlockLoaderFunctionConfig.JustFunction(functionConfig));

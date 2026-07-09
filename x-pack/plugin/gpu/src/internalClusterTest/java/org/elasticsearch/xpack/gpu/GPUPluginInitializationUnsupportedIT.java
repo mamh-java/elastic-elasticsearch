@@ -8,11 +8,14 @@
 package org.elasticsearch.xpack.gpu;
 
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.gpu.GPUSupport;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
+import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldTypeTests;
 import org.elasticsearch.index.mapper.vectors.VectorsFormatProvider;
 import org.elasticsearch.indices.IndicesService;
+import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESIntegTestCase;
 
@@ -23,14 +26,33 @@ import static org.elasticsearch.xpack.gpu.TestVectorsFormatUtils.randomGPUSuppor
 
 public class GPUPluginInitializationUnsupportedIT extends ESIntegTestCase {
 
-    static {
-        // Mocks a cuvs-java UnsupportedProvider
-        TestCuVSServiceProvider.mockedGPUInfoProvider = p -> { throw new UnsupportedOperationException("cuvs-java UnsupportedProvider"); };
+    // Mocks a cuvs-java UnsupportedProvider
+    private static class TestGPUSupport implements GPUSupport {
+        @Override
+        public boolean isSupported() {
+            return false;
+        }
+
+        @Override
+        public long getTotalGpuMemory() {
+            throw new UnsupportedOperationException("cuvs-java UnsupportedProvider");
+        }
+
+        @Override
+        public String getGpuName() {
+            throw new UnsupportedOperationException("cuvs-java UnsupportedProvider");
+        }
     }
 
     public static class TestGPUPlugin extends GPUPlugin {
         public TestGPUPlugin() {
-            super(Settings.EMPTY);
+            super(Settings.EMPTY, new TestGPUSupport());
+        }
+
+        @Override
+        public List<ActionPlugin.ActionHandler> getActions() {
+            // Skip registering xpack usage/info actions in this test as they require XPackLicenseState
+            return List.of();
         }
     }
 
@@ -40,8 +62,6 @@ public class GPUPluginInitializationUnsupportedIT extends ESIntegTestCase {
     }
 
     public void testAutoModeWithUnavailableGPU() {
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
-
         TestGPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
 
@@ -53,7 +73,10 @@ public class GPUPluginInitializationUnsupportedIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
         );
         assertNull(format);
     }

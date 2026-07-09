@@ -24,15 +24,60 @@ public class KeywordFieldSyntheticSourceSupport implements MapperTestCase.Synthe
     private final Integer ignoreAbove;
     private final boolean allIgnored;
     private final boolean store;
-    private final boolean docValues;
+    private final FieldMapper.DocValuesParameter.Values docValues;
     private final String nullValue;
+    private final boolean allowIgnoredSource;
+    private final boolean isColumnar;
 
-    KeywordFieldSyntheticSourceSupport(Integer ignoreAbove, boolean store, String nullValue, boolean useFallbackSyntheticSource) {
+    KeywordFieldSyntheticSourceSupport(
+        Integer ignoreAbove,
+        boolean store,
+        String nullValue,
+        boolean allowIgnoredSource,
+        FieldMapper.DocValuesParameter.Values docValues,
+        boolean isColumnar
+    ) {
         this.ignoreAbove = ignoreAbove;
         this.allIgnored = ignoreAbove != null && LuceneTestCase.rarely();
         this.store = store;
         this.nullValue = nullValue;
-        this.docValues = useFallbackSyntheticSource == false || ESTestCase.randomBoolean();
+        this.allowIgnoredSource = allowIgnoredSource;
+        this.docValues = docValues;
+        this.isColumnar = isColumnar;
+    }
+
+    @Override
+    public boolean isColumnar() {
+        return isColumnar;
+    }
+
+    public static FieldMapper.DocValuesParameter.Values randomDocValuesParams(boolean allowIgnoredSource, boolean isColumnar) {
+        // multi_value=false is only valid in strict-columnar index modes.
+        boolean multiValue = isColumnar == false || ESTestCase.randomBoolean();
+        FieldMapper.DocValuesParameter.Values.OnFailure onFailure = ESTestCase.randomFrom(
+            FieldMapper.DocValuesParameter.Values.OnFailure.FAIL,
+            FieldMapper.DocValuesParameter.Values.OnFailure.IGNORE
+        );
+
+        // Generate nullability=true only: nullability=false has no synthetic-source roundtrip behavior to fuzz.
+        return switch (ESTestCase.randomInt(allowIgnoredSource ? 2 : 1)) {
+            case 0 -> new FieldMapper.DocValuesParameter.Values(
+                true,
+                FieldMapper.DocValuesParameter.Values.Cardinality.LOW,
+                multiValue,
+                true,
+                onFailure
+            );
+            case 1 -> new FieldMapper.DocValuesParameter.Values(
+                true,
+                FieldMapper.DocValuesParameter.Values.Cardinality.HIGH,
+                multiValue,
+                true,
+                onFailure
+            );
+            case 2 -> FieldMapper.DocValuesParameter.Values.DISABLED;
+            default -> throw new IllegalStateException();
+        };
     }
 
     @Override
@@ -41,19 +86,35 @@ public class KeywordFieldSyntheticSourceSupport implements MapperTestCase.Synthe
     }
 
     @Override
+    public boolean enforcesSingleValue() {
+        return docValues.multiValue() == false;
+    }
+
+    @Override
     public boolean preservesExactSource() {
         // We opt in into fallback synthetic source implementation
         // if there is nothing else to use, and it preserves exact source data.
-        return store == false && docValues == false;
+        return store == false && docValues.enabled() == false;
     }
 
     @Override
     public MapperTestCase.SyntheticSourceExample example(int maxValues) {
-        return example(maxValues, false, false);
+        // in columnar mode, ignored values (exceeding ignore_above) are stored in sorted binary doc values
+        return example(maxValues, false, false, isColumnar);
     }
 
     public MapperTestCase.SyntheticSourceExample example(int maxValues, boolean loadBlockFromSource, boolean flipOrder) {
-        if (ESTestCase.randomBoolean()) {
+        return example(maxValues, loadBlockFromSource, flipOrder, true);
+    }
+
+    public MapperTestCase.SyntheticSourceExample example(
+        int maxValues,
+        boolean loadBlockFromSource,
+        boolean flipOrder,
+        boolean ignoredValuesSorted
+    ) {
+        // When multi_value is disabled a document may only have a single value, so never take the multi-valued branch below.
+        if (enforcesSingleValue() || ESTestCase.randomBoolean()) {
             Tuple<String, String> v = generateValue();
             Object sourceValue = preservesExactSource() ? v.v1() : v.v2();
             return new MapperTestCase.SyntheticSourceExample(v.v1(), sourceValue, this::mapping);
@@ -70,18 +131,24 @@ public class KeywordFieldSyntheticSourceSupport implements MapperTestCase.Synthe
                 validValues.add(v);
             }
         });
-        List<String> outputFromDocValues = new HashSet<>(validValues).stream().sorted().toList();
+        // columnar mode preserves insertion order and duplicates; non-columnar deduplicates and sorts
+        List<String> outputFromDocValues = isColumnar ? validValues : new HashSet<>(validValues).stream().sorted().toList();
 
         Object out;
         if (preservesExactSource()) {
             out = in;
         } else {
+            // stored fields are not sorted
             var validValuesInCorrectOrder = store ? validValues : outputFromDocValues;
+            // when fallback fields use binary doc values, then ignored values are sorted
+            // however, when fallback fields use stored fields, then ignored values are not sorted
+            var ignoredValuesInCorrectOrder = ignoredValuesSorted ? ignoredValues.stream().sorted().toList() : ignoredValues;
+
             // this is an ugly little hack that flips the order of ignored values, which is important for the text-family fields where the
             // ordering of produced synthetic source values can be different from what was supplied
             var syntheticSourceOutputList = flipOrder
-                ? Stream.concat(ignoredValues.stream(), validValuesInCorrectOrder.stream()).toList()
-                : Stream.concat(validValuesInCorrectOrder.stream(), ignoredValues.stream()).toList();
+                ? Stream.concat(ignoredValuesInCorrectOrder.stream(), validValuesInCorrectOrder.stream()).toList()
+                : Stream.concat(validValuesInCorrectOrder.stream(), ignoredValuesInCorrectOrder.stream()).toList();
             out = syntheticSourceOutputList.size() == 1 ? syntheticSourceOutputList.get(0) : syntheticSourceOutputList;
         }
 
@@ -111,8 +178,15 @@ public class KeywordFieldSyntheticSourceSupport implements MapperTestCase.Synthe
         if (store) {
             b.field("store", true);
         }
-        if (docValues == false) {
+
+        if (docValues.enabled() == false) {
             b.field("doc_values", false);
+        } else if (docValues.multiValue() == false) {
+            b.startObject("doc_values");
+            b.field("multi_value", false);
+            b.endObject();
+        } else {
+            b.field("doc_values", true);
         }
     }
 

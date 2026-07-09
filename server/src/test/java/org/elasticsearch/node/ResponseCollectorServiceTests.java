@@ -139,4 +139,5 @@ public class ResponseCollectorServiceTests extends ESTestCase {
         assertTrue(nodeStats.containsKey("node1"));
         assertFalse(nodeStats.containsKey("node2"));
     }
+
 }

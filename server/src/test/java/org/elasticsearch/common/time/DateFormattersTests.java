@@ -66,6 +66,8 @@ public class DateFormattersTests extends ESTestCase {
         assertThat(e.getMessage(), containsString(formatter.pattern()));
         assertThat(e.getCause(), instanceOf(DateTimeParseException.class));
         assertThat(((DateTimeParseException) e.getCause()).getErrorIndex(), indexMatcher);
+
+        assertThat(formatter.tryParse(input), nullValue());
     }
 
     private void assertParses(String input, String format) {
@@ -77,8 +79,9 @@ public class DateFormattersTests extends ESTestCase {
 
         TemporalAccessor javaTimeAccessor = formatter.parse(input);
         ZonedDateTime zonedDateTime = DateFormatters.from(javaTimeAccessor);
-
         assertThat(zonedDateTime, notNullValue());
+
+        assertThat(formatter.tryParse(input), notNullValue());
     }
 
     private void assertDateMathEquals(String text, String expected, String pattern) {
@@ -406,6 +409,41 @@ public class DateFormattersTests extends ESTestCase {
         assertThat(first, is(second));
     }
 
+    public void testIsoParsersWithDifferentTimezones() throws Exception {
+        ZonedDateTime first = DateFormatters.from(
+            DateFormatters.forPattern("strict_date_optional_time_nanos").parse("2018-05-15T17:14:56+01:00")
+        );
+        ZonedDateTime second = DateFormatters.from(
+            DateFormatters.forPattern("strict_date_optional_time_nanos").parse("2018-05-15T19:14:56+03:00")
+        ).withZoneSameInstant(ZoneId.of("+01:00"));
+        assertThat(first, is(second));
+    }
+
+    public void testJavaParsersWithDifferentTimezones() throws Exception {
+        ZonedDateTime first = DateFormatters.from(DateFormatters.forPattern("yyyy-MM-dd HH_mm_ss XXX").parse("2018-05-15 17_14_56 +01:00"));
+        ZonedDateTime second = DateFormatters.from(DateFormatters.forPattern("yyyy-MM-dd HH-mm-ss-XXX").parse("2018-05-15 19-14-56-+03:00"))
+            .withZoneSameInstant(ZoneId.of("+01:00"));
+        assertThat(first, is(second));
+    }
+
+    public void testJavaParsersWithTimezoneDefault() throws Exception {
+        ZonedDateTime first = DateFormatters.from(DateFormatters.forPattern("yyyy-MM-dd HH:mm:ss XXX").parse("2018-05-15 17:14:56 +01:00"));
+        ZonedDateTime second = DateFormatters.from(
+            DateFormatters.forPattern("yyyy-MM-dd HH:mm:ss XXX").parse("2018-05-15 17:14:56 +01:00"),
+            Locale.ROOT,
+            ZoneId.of("-08:15")
+        );
+        assertThat(first, is(second));
+    }
+
+    public void testJavaParsersWithExternalTimezoneOverride() throws Exception {
+        ZonedDateTime first = DateFormatters.from(DateFormatters.forPattern("yyyy-MM-dd HH:mm:ss XXX").parse("2018-05-15 17:14:56 +01:00"));
+        ZonedDateTime second = DateFormatters.from(
+            DateFormatters.forPattern("yyyy-MM-dd HH:mm:ss XXX").withZone(ZoneId.of("+01:00")).parse("2018-05-15 17:14:56 -08:15")
+        );
+        assertThat(first, is(second));
+    }
+
     public void testNanoOfSecondWidth() throws Exception {
         ZonedDateTime first = DateFormatters.from(
             DateFormatters.forPattern("strict_date_optional_time_nanos").parse("1970-01-01T00:00:00.1")
@@ -448,6 +486,11 @@ public class DateFormattersTests extends ESTestCase {
 
         // different pattern, thus not equals
         assertThat(DateFormatters.forPattern("YYYY"), not(equalTo(DateFormatters.forPattern("YY"))));
+
+        // Object.equals contract: x.equals(null) is false, never a NullPointerException. Objects.equals(fmt, null)
+        // is reached from any record/POJO holding a nullable DateFormatter component.
+        assertThat(DateFormatters.forPattern("YYYY").equals(null), is(false));
+        assertThat(DateFormatters.forPattern("YYYY"), not(equalTo(new Object())));
 
         DateFormatter epochSecondFormatter = DateFormatters.forPattern("epoch_second");
         assertThat(epochSecondFormatter, sameInstance(DateFormatters.forPattern("epoch_second")));

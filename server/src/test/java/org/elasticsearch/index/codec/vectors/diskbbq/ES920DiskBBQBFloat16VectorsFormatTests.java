@@ -9,8 +9,6 @@
 
 package org.elasticsearch.index.codec.vectors.diskbbq;
 
-import com.carrotsearch.randomizedtesting.generators.RandomPicks;
-
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
@@ -26,30 +24,40 @@ import org.junit.AssumptionViolatedException;
 import org.junit.Before;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.MIN_CENTROIDS_PER_PARENT_CLUSTER;
 import static org.elasticsearch.index.codec.vectors.diskbbq.ES920DiskBBQVectorsFormat.MIN_VECTORS_PER_CLUSTER;
+import static org.elasticsearch.test.ESTestCase.randomFrom;
+import static org.hamcrest.Matchers.aMapWithSize;
 import static org.hamcrest.Matchers.equalTo;
 
 public class ES920DiskBBQBFloat16VectorsFormatTests extends BaseBFloat16KnnVectorsFormatTestCase {
 
     static {
-        LogConfigurator.loadLog4jPlugins();
         LogConfigurator.configureESLogging(); // native access requires logging to be initialized
     }
 
     private KnnVectorsFormat format;
+    private ExecutorService executorService;
 
     @Before
     @Override
     public void setUp() throws Exception {
+        int numMergingThreads = 1;
+        if (random().nextBoolean()) {
+            numMergingThreads = random().nextInt(2, 4);
+            executorService = Executors.newFixedThreadPool(numMergingThreads);
+        }
         if (rarely()) {
             format = new ES920DiskBBQVectorsFormat(
                 random().nextInt(2 * MIN_VECTORS_PER_CLUSTER, ES920DiskBBQVectorsFormat.MAX_VECTORS_PER_CLUSTER),
                 random().nextInt(8, ES920DiskBBQVectorsFormat.MAX_CENTROIDS_PER_PARENT_CLUSTER),
                 DenseVectorFieldMapper.ElementType.BFLOAT16,
-                random().nextBoolean()
+                random().nextBoolean(),
+                executorService,
+                numMergingThreads
             );
         } else {
             // run with low numbers to force many clusters with parents
@@ -57,10 +65,20 @@ public class ES920DiskBBQBFloat16VectorsFormatTests extends BaseBFloat16KnnVecto
                 random().nextInt(MIN_VECTORS_PER_CLUSTER, 2 * MIN_VECTORS_PER_CLUSTER),
                 random().nextInt(MIN_CENTROIDS_PER_PARENT_CLUSTER, 8),
                 DenseVectorFieldMapper.ElementType.BFLOAT16,
-                random().nextBoolean()
+                random().nextBoolean(),
+                executorService,
+                numMergingThreads
             );
         }
         super.setUp();
+    }
+
+    @Override
+    public void tearDown() throws Exception {
+        if (executorService != null) {
+            executorService.shutdownNow();
+        }
+        super.tearDown();
     }
 
     @Override
@@ -70,13 +88,10 @@ public class ES920DiskBBQBFloat16VectorsFormatTests extends BaseBFloat16KnnVecto
 
     @Override
     protected VectorSimilarityFunction randomSimilarity() {
-        return RandomPicks.randomFrom(
-            random(),
-            List.of(
-                VectorSimilarityFunction.DOT_PRODUCT,
-                VectorSimilarityFunction.EUCLIDEAN,
-                VectorSimilarityFunction.MAXIMUM_INNER_PRODUCT
-            )
+        return randomFrom(
+            VectorSimilarityFunction.DOT_PRODUCT,
+            VectorSimilarityFunction.EUCLIDEAN,
+            VectorSimilarityFunction.MAXIMUM_INNER_PRODUCT
         );
     }
 
@@ -101,7 +116,7 @@ public class ES920DiskBBQBFloat16VectorsFormatTests extends BaseBFloat16KnnVecto
             }
             var offHeap = knnVectorsReader.getOffHeapByteSize(fieldInfo);
             long totalByteSize = offHeap.values().stream().mapToLong(Long::longValue).sum();
-            assertThat(offHeap.size(), equalTo(3));
+            assertThat(offHeap, aMapWithSize(3));
             assertThat(totalByteSize, equalTo(offHeap.values().stream().mapToLong(Long::longValue).sum()));
         } else {
             throw new AssertionError("unexpected:" + r.getClass());

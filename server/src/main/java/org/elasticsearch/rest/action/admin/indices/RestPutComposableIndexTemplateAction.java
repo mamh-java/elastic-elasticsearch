@@ -28,6 +28,7 @@ import static org.elasticsearch.rest.RestUtils.getMasterNodeTimeout;
 import static org.elasticsearch.rest.action.admin.indices.RestPutComponentTemplateAction.SUPPORTS_DOWNSAMPLING_METHOD;
 import static org.elasticsearch.rest.action.admin.indices.RestPutComponentTemplateAction.SUPPORTS_FAILURE_STORE;
 import static org.elasticsearch.rest.action.admin.indices.RestPutComponentTemplateAction.SUPPORTS_FAILURE_STORE_LIFECYCLE;
+import static org.elasticsearch.rest.action.admin.indices.RestPutComponentTemplateAction.SUPPORTS_FROZEN_AFTER;
 
 @ServerlessScope(Scope.PUBLIC)
 public class RestPutComposableIndexTemplateAction extends BaseRestHandler {
@@ -38,7 +39,8 @@ public class RestPutComposableIndexTemplateAction extends BaseRestHandler {
         SUPPORTS_FAILURE_STORE,
         SUPPORTS_FAILURE_STORE_LIFECYCLE,
         INDEX_TEMPLATE_TRACKING_INFO,
-        SUPPORTS_DOWNSAMPLING_METHOD
+        SUPPORTS_DOWNSAMPLING_METHOD,
+        SUPPORTS_FROZEN_AFTER
     );
 
     @Override

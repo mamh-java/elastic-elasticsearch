@@ -7,7 +7,6 @@
 
 package org.elasticsearch.xpack.esql.expression.function.fulltext;
 
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -24,6 +23,7 @@ import org.elasticsearch.xpack.esql.expression.function.ConfigurationFunction;
 import org.elasticsearch.xpack.esql.expression.function.Example;
 import org.elasticsearch.xpack.esql.expression.function.FunctionAppliesTo;
 import org.elasticsearch.xpack.esql.expression.function.FunctionAppliesToLifecycle;
+import org.elasticsearch.xpack.esql.expression.function.FunctionDefinition;
 import org.elasticsearch.xpack.esql.expression.function.FunctionInfo;
 import org.elasticsearch.xpack.esql.expression.function.MapParam;
 import org.elasticsearch.xpack.esql.expression.function.OptionalArgument;
@@ -31,6 +31,7 @@ import org.elasticsearch.xpack.esql.expression.function.Options;
 import org.elasticsearch.xpack.esql.expression.function.Param;
 import org.elasticsearch.xpack.esql.io.stream.PlanStreamInput;
 import org.elasticsearch.xpack.esql.optimizer.rules.physical.local.LucenePushdownPredicates;
+import org.elasticsearch.xpack.esql.plan.QuerySettings;
 import org.elasticsearch.xpack.esql.planner.TranslatorHandler;
 import org.elasticsearch.xpack.esql.querydsl.query.KqlQuery;
 import org.elasticsearch.xpack.esql.session.Configuration;
@@ -63,6 +64,7 @@ import static org.elasticsearch.xpack.kql.query.KqlQueryBuilder.TIME_ZONE_FIELD;
  */
 public class Kql extends FullTextFunction implements OptionalArgument, ConfigurationFunction {
     public static final NamedWriteableRegistry.Entry ENTRY = new NamedWriteableRegistry.Entry(Expression.class, "Kql", Kql::readFrom);
+    public static final FunctionDefinition DEFINITION = FunctionDefinition.def(Kql.class).binaryConfig(Kql::new).name("kql");
 
     private final Configuration configuration;
 
@@ -81,7 +83,13 @@ public class Kql extends FullTextFunction implements OptionalArgument, Configura
         appliesTo = {
             @FunctionAppliesTo(lifeCycle = FunctionAppliesToLifecycle.PREVIEW, version = "9.0.0"),
             @FunctionAppliesTo(lifeCycle = FunctionAppliesToLifecycle.GA, version = "9.1.0") },
+        briefSummary = "Performs a KQL query and returns true if it matches the row.",
         description = "Performs a KQL query. Returns true if the provided KQL query string matches the row.",
+        detailedDescription = """
+            :::{tip}
+            Learn more about using [ES|QL for search use cases](docs-content://solutions/search/esql-for-search.md).
+            :::
+            """,
         examples = {
             @Example(file = "kql-function", tag = "kql-with-field", description = "Use KQL to filter by a specific field value"),
             @Example(
@@ -143,10 +151,7 @@ public class Kql extends FullTextFunction implements OptionalArgument, Configura
     private static Kql readFrom(StreamInput in) throws IOException {
         Source source = Source.readFrom((PlanStreamInput) in);
         Expression query = in.readNamedWriteable(Expression.class);
-        QueryBuilder queryBuilder = null;
-        if (in.getTransportVersion().supports(TransportVersions.V_8_18_0)) {
-            queryBuilder = in.readOptionalNamedWriteable(QueryBuilder.class);
-        }
+        QueryBuilder queryBuilder = in.readOptionalNamedWriteable(QueryBuilder.class);
         // Options are not serialized - they're embedded in the QueryBuilder
         return new Kql(source, query, null, queryBuilder, ((PlanStreamInput) in).configuration());
     }
@@ -155,9 +160,7 @@ public class Kql extends FullTextFunction implements OptionalArgument, Configura
     public void writeTo(StreamOutput out) throws IOException {
         source().writeTo(out);
         out.writeNamedWriteable(query());
-        if (out.getTransportVersion().supports(TransportVersions.V_8_18_0)) {
-            out.writeOptionalNamedWriteable(queryBuilder());
-        }
+        out.writeOptionalNamedWriteable(queryBuilder());
         // Options are not serialized - they're embedded in the QueryBuilder
     }
 
@@ -190,7 +193,7 @@ public class Kql extends FullTextFunction implements OptionalArgument, Configura
     }
 
     private Map<String, Object> kqlQueryOptions() throws InvalidArgumentException {
-        if (options() == null && configuration.zoneId().equals(ZoneOffset.UTC)) {
+        if (options() == null && QuerySettings.TIME_ZONE.get(configuration.resolvedSettings()).equals(ZoneOffset.UTC)) {
             return null;
         }
 
@@ -198,7 +201,7 @@ public class Kql extends FullTextFunction implements OptionalArgument, Configura
         if (options() != null) {
             Options.populateMap((MapExpression) options(), kqlOptions, source(), SECOND, ALLOWED_OPTIONS);
         }
-        kqlOptions.putIfAbsent(TIME_ZONE_FIELD.getPreferredName(), configuration.zoneId().getId());
+        kqlOptions.putIfAbsent(TIME_ZONE_FIELD.getPreferredName(), QuerySettings.TIME_ZONE.get(configuration.resolvedSettings()).getId());
         return kqlOptions;
     }
 

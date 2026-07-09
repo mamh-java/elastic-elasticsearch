@@ -11,10 +11,6 @@ The *Elastic Confluence connector* is a [connector](/reference/search-connectors
 
 View the [**source code** for this connector](https://github.com/elastic/connectors/tree/main/app/connectors_service/connectors/sources/atlassian/confluence) (branch *main*, compatible with Elastic *9.0*).
 
-::::{important}
-As of Elastic 9.0, managed connectors on Elastic Cloud Hosted are no longer available. All connectors must be [self-managed](/reference/search-connectors/self-managed-connectors.md).
-::::
-
 ## **Self-managed connector** [es-connectors-confluence-connector-client-reference]
 
 ### Availability and prerequisites [es-connectors-confluence-client-availability-prerequisites]
@@ -37,7 +33,7 @@ To use this connector, satisfy all [self-managed connector requirements](/refere
 
 To create a new Confluence connector:
 
-1. In the Kibana UI, navigate to the **Search → Content → Connectors** page from the main menu, or use the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects).
+1. In the Kibana UI, search for "connectors" using the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects) and choose the "Elasticsearch" connectors.
 2. Follow the instructions to create a new  **Confluence** self-managed connector.
 
 
@@ -278,7 +274,7 @@ The connector syncs the following Confluence object types:
 * Attachments
 
 ::::{note}
-* Content of files bigger than 10 MB won’t be extracted.
+* Content of files bigger than 8 MiB won’t be extracted.
 * Permissions are not synced. **All documents** indexed to an Elastic deployment will be visible to **all users with access** to that Elastic Deployment.
 
 ::::

@@ -12,6 +12,7 @@ package org.elasticsearch.cluster.routing;
 import org.elasticsearch.cluster.Diff;
 import org.elasticsearch.cluster.SimpleDiffable;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
+import org.elasticsearch.cluster.metadata.IndexReshardingMetadata;
 import org.elasticsearch.cluster.metadata.ProjectMetadata;
 import org.elasticsearch.cluster.routing.RecoverySource.EmptyStoreRecoverySource;
 import org.elasticsearch.cluster.routing.RecoverySource.ExistingStoreRecoverySource;
@@ -223,6 +224,14 @@ public class IndexRoutingTable implements SimpleDiffable<IndexRoutingTable> {
 
     public Stream<IndexShardRoutingTable> allShards() {
         return Stream.of(shards);
+    }
+
+    public Stream<ShardRouting> allActivePrimaries() {
+        return Stream.of(shards).map(IndexShardRoutingTable::primaryShard).filter(ShardRouting::active);
+    }
+
+    public Stream<ShardRouting> allActiveReplicas() {
+        return Stream.of(shards).map(IndexShardRoutingTable::replicaShards).flatMap(List::stream).filter(ShardRouting::active);
     }
 
     /**
@@ -513,6 +522,7 @@ public class IndexRoutingTable implements SimpleDiffable<IndexRoutingTable> {
             shards = new IndexShardRoutingTable.Builder[indexMetadata.getNumberOfShards()];
             for (int shardNumber = 0; shardNumber < indexMetadata.getNumberOfShards(); shardNumber++) {
                 ShardId shardId = new ShardId(index, shardNumber);
+                UnassignedInfo shardUnassignedInfo = unassignedInfo;
                 final var previousNodes = getPreviousNodes(previousIndexRoutingTable, shardNumber);
                 final RecoverySource primaryRecoverySource;
                 if (indexMetadata.inSyncAllocationIds(shardNumber).isEmpty() == false) {
@@ -521,6 +531,12 @@ public class IndexRoutingTable implements SimpleDiffable<IndexRoutingTable> {
                 } else if (indexMetadata.getResizeSourceIndex() != null) {
                     // this is a new index but the initial shards should merged from another index
                     primaryRecoverySource = LocalShardsRecoverySource.INSTANCE;
+                } else if (IndexReshardingMetadata.isSplitTarget(shardId, indexMetadata.getReshardingMetadata())) {
+                    var split = indexMetadata.getReshardingMetadata().getSplit();
+                    primaryRecoverySource = new RecoverySource.ReshardSplitRecoverySource(
+                        new ShardId(shardId.getIndex(), split.sourceShard(shardNumber))
+                    );
+                    shardUnassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.RESHARD_ADDED, null);
                 } else {
                     // a freshly created index with no restriction
                     primaryRecoverySource = EmptyStoreRecoverySource.INSTANCE;
@@ -533,7 +549,7 @@ public class IndexRoutingTable implements SimpleDiffable<IndexRoutingTable> {
                             shardId,
                             primary,
                             primary ? primaryRecoverySource : PeerRecoverySource.INSTANCE,
-                            withLastAllocatedNodeId(unassignedInfo, previousNodes, i),
+                            withLastAllocatedNodeId(shardUnassignedInfo, previousNodes, i),
                             shardRoutingRoleStrategy.newEmptyRole(i)
                         )
                     );

@@ -9,10 +9,6 @@ mapped_pages:
 
 The *Elastic Google Cloud Storage connector* is a [connector](/reference/search-connectors/index.md) for [Google Cloud Storage](https://cloud.google.com/storage) data sources.
 
-::::{important}
-As of Elastic 9.0, managed connectors on Elastic Cloud Hosted are no longer available. All connectors must be [self-managed](/reference/search-connectors/self-managed-connectors.md).
-::::
-
 ## **Self-managed connector reference** [es-connectors-google-cloud-connector-client-reference]
 
 ### Availability and prerequisites [es-connectors-google-cloud-client-availability-prerequisites]
@@ -130,7 +126,7 @@ The connector will fetch all buckets and paths the service account has access to
 The `Owner` field is not fetched as `read_only` scope doesn’t allow the connector to fetch IAM information.
 
 ::::{note}
-* Content from files bigger than 10 MB won’t be extracted by default. You can use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
+* Content from files bigger than 8 MiB won’t be extracted by default. You can use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
 * Permission are not synced. All documents indexed to an Elastic deployment will be visible to all users with access to that Elastic Deployment.
 
 ::::

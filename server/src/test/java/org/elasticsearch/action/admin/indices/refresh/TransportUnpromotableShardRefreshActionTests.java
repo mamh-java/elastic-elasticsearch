@@ -19,7 +19,8 @@ import org.elasticsearch.cluster.action.shard.ShardStateAction;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
-import org.elasticsearch.cluster.metadata.Metadata;
+import org.elasticsearch.cluster.metadata.ProjectId;
+import org.elasticsearch.cluster.metadata.ProjectMetadata;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodeUtils;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
@@ -32,6 +33,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexService;
+import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.tasks.Task;
@@ -42,6 +44,8 @@ import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportException;
 import org.elasticsearch.transport.TransportResponseHandler;
 import org.elasticsearch.transport.TransportService;
+import org.junit.After;
+import org.junit.Before;
 
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -67,9 +71,8 @@ public class TransportUnpromotableShardRefreshActionTests extends ESTestCase {
     private TransportService transportService;
     private DiscoveryNode localNode;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void initServices() throws Exception {
         threadPool = new TestThreadPool("TransportUnpromotableShardRefreshActionTests");
         localNode = DiscoveryNodeUtils.create("local");
         clusterService = createClusterService(threadPool, localNode);
@@ -87,9 +90,8 @@ public class TransportUnpromotableShardRefreshActionTests extends ESTestCase {
         transportService.acceptIncomingRequests();
     }
 
-    @Override
-    public void tearDown() throws Exception {
-        super.tearDown();
+    @After
+    public void closeServices() throws Exception {
         clusterService.close();
         transportService.stop();
         ThreadPool.terminate(threadPool, 30, TimeUnit.SECONDS);
@@ -161,11 +163,7 @@ public class TransportUnpromotableShardRefreshActionTests extends ESTestCase {
 
         var withRefreshBlock = randomBoolean();
         if (withRefreshBlock) {
-            setState(
-                clusterService,
-                ClusterState.builder(clusterService.state())
-                    .blocks(ClusterBlocks.builder().addIndexBlock(shardId.getIndexName(), IndexMetadata.INDEX_REFRESH_BLOCK))
-            );
+            setState(clusterService, clusterStateWithRefreshBlock(clusterService.state(), shardId, ProjectId.DEFAULT));
         }
 
         final var future = new PlainActionFuture<ActionResponse.Empty>();
@@ -196,7 +194,8 @@ public class TransportUnpromotableShardRefreshActionTests extends ESTestCase {
                 ClusterState.builder(clusterService.state())
                     .blocks(
                         ClusterBlocks.builder()
-                            .removeIndexBlock(Metadata.DEFAULT_PROJECT_ID, shardId.getIndexName(), IndexMetadata.INDEX_REFRESH_BLOCK)
+                            .blocks(clusterService.state().blocks())
+                            .removeIndexBlock(ProjectId.DEFAULT, shardId.getIndexName(), IndexMetadata.INDEX_REFRESH_BLOCK)
                     )
             );
         }
@@ -231,11 +230,7 @@ public class TransportUnpromotableShardRefreshActionTests extends ESTestCase {
             }
         };
 
-        setState(
-            clusterService,
-            ClusterState.builder(clusterService.state())
-                .blocks(ClusterBlocks.builder().addIndexBlock(shardId.getIndexName(), IndexMetadata.INDEX_REFRESH_BLOCK))
-        );
+        setState(clusterService, clusterStateWithRefreshBlock(clusterService.state(), shardId, ProjectId.DEFAULT));
 
         final var countDownLatch = new CountDownLatch(1);
         final var request = new UnpromotableShardRefreshRequest(
@@ -260,6 +255,18 @@ public class TransportUnpromotableShardRefreshActionTests extends ESTestCase {
         }
 
         safeAwait(countDownLatch);
+    }
+
+    private ClusterState clusterStateWithRefreshBlock(ClusterState base, ShardId shardId, ProjectId projectId) {
+        IndexMetadata indexMetadata = IndexMetadata.builder(shardId.getIndexName())
+            .settings(indexSettings(IndexVersion.current(), shardId.getIndex().getUUID(), 1, 0).build())
+            .build();
+        return ClusterState.builder(base)
+            .putProjectMetadata(ProjectMetadata.builder(projectId).put(indexMetadata, false))
+            .blocks(
+                ClusterBlocks.builder(base.blocks()).addIndexBlock(projectId, shardId.getIndexName(), IndexMetadata.INDEX_REFRESH_BLOCK)
+            )
+            .build();
     }
 
     private IndexShardRoutingTable createShardRoutingTableWithPrimaryAndSearchShards(ShardId shardId, boolean withSearchShards) {

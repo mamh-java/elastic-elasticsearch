@@ -25,6 +25,7 @@ import org.elasticsearch.common.blobstore.support.BlobContainerUtils;
 import org.elasticsearch.common.blobstore.support.BlobMetadata;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.io.Streams;
+import org.elasticsearch.common.network.InetAddresses;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
@@ -48,12 +49,16 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.OptionalInt;
 import java.util.concurrent.TimeUnit;
 
 import static org.elasticsearch.common.bytes.BytesReferenceTestUtils.equalBytes;
 import static org.elasticsearch.repositories.blobstore.BlobStoreTestUtil.randomPurpose;
 import static org.elasticsearch.repositories.gcs.GoogleCloudStorageClientSettings.APPLICATION_NAME_SETTING;
 import static org.elasticsearch.repositories.gcs.GoogleCloudStorageClientSettings.CONNECT_TIMEOUT_SETTING;
+import static org.elasticsearch.repositories.gcs.GoogleCloudStorageClientSettings.GCS_TENACIOUS_RETRIES_ENABLED_SETTING;
+import static org.elasticsearch.repositories.gcs.GoogleCloudStorageClientSettings.MAX_RETRIES_SETTING;
+import static org.elasticsearch.repositories.gcs.GoogleCloudStorageClientSettings.MEGABYTES_COPIED_PER_CHUNK_SETTING;
 import static org.elasticsearch.repositories.gcs.GoogleCloudStorageClientSettings.PROJECT_ID_SETTING;
 import static org.elasticsearch.repositories.gcs.GoogleCloudStorageClientSettings.READ_TIMEOUT_SETTING;
 import static org.elasticsearch.repositories.gcs.StorageOperation.GET;
@@ -254,7 +259,11 @@ public class GoogleCloudStorageBlobContainerStatsTests extends ESTestCase {
             READ_TIMEOUT_SETTING.getDefault(Settings.EMPTY),
             APPLICATION_NAME_SETTING.getDefault(Settings.EMPTY),
             new URI(getEndpointForServer(httpServer) + "/token"),
-            null
+            null,
+            MAX_RETRIES_SETTING.getDefault(Settings.EMPTY),
+            MEGABYTES_COPIED_PER_CHUNK_SETTING.getDefault(Settings.EMPTY),
+            GCS_TENACIOUS_RETRIES_ENABLED_SETTING.getDefault(Settings.EMPTY),
+            OptionalInt.empty()
         );
         googleCloudStorageService.refreshAndClearCache(Map.of(clientName, clientSettings));
         final GoogleCloudStorageBlobStore blobStore = new GoogleCloudStorageBlobStore(
@@ -266,7 +275,9 @@ public class GoogleCloudStorageBlobContainerStatsTests extends ESTestCase {
             BigArrays.NON_RECYCLING_INSTANCE,
             Math.toIntExact(BUFFER_SIZE.getBytes()),
             BackoffPolicy.constantBackoff(TimeValue.timeValueMillis(10), 10),
-            new GcsRepositoryStatsCollector()
+            new GcsRepositoryStatsCollector(),
+            null,
+            null
         );
         final GoogleCloudStorageBlobContainer googleCloudStorageBlobContainer = new GoogleCloudStorageBlobContainer(
             BlobPath.EMPTY,
@@ -277,7 +288,8 @@ public class GoogleCloudStorageBlobContainerStatsTests extends ESTestCase {
 
     protected String getEndpointForServer(final HttpServer server) {
         final InetSocketAddress address = server.getAddress();
-        return "http://" + address.getHostString() + ":" + address.getPort();
+        String host = InetAddresses.toUriString(address.getAddress());
+        return "http://" + host + ":" + address.getPort();
     }
 
     private record ContainerAndBlobStore(GoogleCloudStorageBlobContainer blobContainer, GoogleCloudStorageBlobStore blobStore)

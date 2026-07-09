@@ -59,6 +59,8 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.elasticsearch.transport.RemoteClusterAware.LOCAL_CLUSTER_GROUP_KEY;
+import static org.elasticsearch.xpack.esql.action.EsqlExecutionInfoTests.createEsqlExecutionInfo;
+import static org.elasticsearch.xpack.esql.action.EsqlExecutionInfoTests.createEsqlExecutionInfoCluster;
 import static org.hamcrest.Matchers.arrayWithSize;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
@@ -426,7 +428,7 @@ public class EnrichPolicyResolverTests extends ESTestCase {
             super(
                 mockClusterService(projectId, policies),
                 transports.get(cluster),
-                new IndexResolver(new FieldCapsClient(threadPool, aliases, mappings)),
+                new IndexResolver(new FieldCapsClient(threadPool, aliases, mappings), () -> true),
                 TestProjectResolvers.singleProject(projectId)
             );
             this.policies = policies;
@@ -436,9 +438,9 @@ public class EnrichPolicyResolverTests extends ESTestCase {
         }
 
         EnrichResolution resolvePolicies(Collection<String> clusters, Collection<UnresolvedPolicy> unresolvedPolicies) {
-            EsqlExecutionInfo esqlExecutionInfo = new EsqlExecutionInfo(true);
+            EsqlExecutionInfo esqlExecutionInfo = createEsqlExecutionInfo(true);
             for (String cluster : clusters) {
-                esqlExecutionInfo.swapCluster(cluster, (k, v) -> new EsqlExecutionInfo.Cluster(cluster, "*"));
+                esqlExecutionInfo.swapCluster(cluster, (k, v) -> createEsqlExecutionInfoCluster(cluster, "*"));
             }
             if (randomBoolean()) {
                 unresolvedPolicies = new ArrayList<>(unresolvedPolicies);

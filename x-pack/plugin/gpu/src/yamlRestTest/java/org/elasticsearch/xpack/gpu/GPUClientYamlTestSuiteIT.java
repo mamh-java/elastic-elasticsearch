@@ -8,25 +8,23 @@ package org.elasticsearch.xpack.gpu;
 
 import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
 
-import org.elasticsearch.gpu.GPUSupport;
 import org.elasticsearch.test.cluster.ElasticsearchCluster;
+import org.elasticsearch.test.cluster.local.distribution.DistributionType;
 import org.elasticsearch.test.rest.yaml.ClientYamlTestCandidate;
 import org.elasticsearch.test.rest.yaml.ESClientYamlSuiteTestCase;
-import org.junit.BeforeClass;
 import org.junit.ClassRule;
+import org.junit.rules.RuleChain;
+import org.junit.rules.TestRule;
 
 public class GPUClientYamlTestSuiteIT extends ESClientYamlSuiteTestCase {
 
-    @BeforeClass
-    public static void setup() {
-        assumeTrue("cuvs not supported", GPUSupport.isSupported());
-    }
-
-    @ClassRule
     public static ElasticsearchCluster cluster = createCluster();
+
+    public static GPUSupportedRule gpuSupportedRule = new GPUSupportedRule();
 
     private static ElasticsearchCluster createCluster() {
         var builder = ElasticsearchCluster.local()
+            .distribution(DistributionType.DEFAULT)
             .nodes(1)
             .module("gpu")
             .setting("xpack.license.self_generated.type", "trial")
@@ -44,13 +42,16 @@ public class GPUClientYamlTestSuiteIT extends ESClientYamlSuiteTestCase {
         return builder.build();
     }
 
+    @ClassRule
+    public static TestRule ruleChain = RuleChain.outerRule(gpuSupportedRule).around(cluster);
+
     public GPUClientYamlTestSuiteIT(final ClientYamlTestCandidate testCandidate) {
         super(testCandidate);
     }
 
     @ParametersFactory
     public static Iterable<Object[]> parameters() throws Exception {
-        return ESClientYamlSuiteTestCase.createParameters();
+        return ESClientYamlSuiteTestCase.createParameters("gpu/supported");
     }
 
     @Override

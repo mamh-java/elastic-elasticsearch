@@ -7,8 +7,7 @@
 
 package org.elasticsearch.xpack.esql.action;
 
-import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest;
-import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequestBuilder;
+import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.IndexMode;
@@ -25,6 +24,7 @@ import java.time.Duration;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -604,11 +604,207 @@ public class CrossClusterLookupJoinIT extends AbstractCrossClusterTestCase {
         );
     }
 
-    private void createIndexWithDocument(String clusterAlias, String indexName, Settings.Builder settings, Map<String, Object> source) {
+    public void testRemoteLookupJoinIndexScope() throws IOException {
+        assumeTrue("Requires subquery in FROM command support", EsqlCapabilities.Cap.SUBQUERY_IN_FROM_COMMAND.isEnabled());
+        setupClusters(3);
+        setSkipUnavailable(REMOTE_CLUSTER_1, false);
+        setSkipUnavailable(REMOTE_CLUSTER_2, false);
+
+        var defaultSettings = Settings.builder();
+        createIndexWithDocument(LOCAL_CLUSTER, "data", defaultSettings, Map.of("key", 0, "cluster", "local"));
+        createIndexWithDocument(REMOTE_CLUSTER_1, "data", defaultSettings, Map.of("key", 1, "cluster", "remote-1"));
+        createIndexWithDocument(REMOTE_CLUSTER_2, "data", defaultSettings, Map.of("key", 2, "cluster", "remote-2"));
+
+        var lookupSettings = Settings.builder().put(IndexSettings.MODE.getKey(), IndexMode.LOOKUP);
+        createIndexWithDocument(LOCAL_CLUSTER, "lookup_local", lookupSettings, Map.of("key", 0, "location", "lookup-local"));
+        createIndexWithDocument(REMOTE_CLUSTER_1, "lookup_remote_1", lookupSettings, Map.of("key", 1, "location", "lookup-remote-1"));
+        createIndexWithDocument(REMOTE_CLUSTER_2, "lookup_remote_2", lookupSettings, Map.of("key", 2, "location", "lookup-remote-2"));
+        createIndexWithDocument(LOCAL_CLUSTER, "lookup_remote_all", lookupSettings, Map.of("key", 0, "location", "lookup-remote-a0"));
+        createIndexWithDocument(REMOTE_CLUSTER_1, "lookup_remote_all", lookupSettings, Map.of("key", 1, "location", "lookup-remote-a1"));
+        createIndexWithDocument(REMOTE_CLUSTER_2, "lookup_remote_all", lookupSettings, Map.of("key", 2, "location", "lookup-remote-a2"));
+
+        try (EsqlQueryResponse resp = runQuery("""
+            FROM (FROM cluster-a:data | LOOKUP JOIN lookup_remote_1 ON key),
+                 (FROM remote-b:data)
+            | KEEP key, cluster, location
+            | SORT key
+            """, randomBoolean())) {
+            assertThat(
+                getValuesList(resp),
+                equalTo(
+                    List.of(
+                        List.of(1L, "remote-1", "lookup-remote-1"),
+                        Arrays.asList(2L, "remote-2", null)// List.of does not permit nulls
+                    )
+                )
+            );
+        }
+
+        try (EsqlQueryResponse resp = runQuery("""
+            FROM (FROM cluster-a:data),
+                 (FROM data | LOOKUP JOIN lookup_local ON key)
+            | KEEP key, cluster, location
+            | SORT key
+            """, randomBoolean())) {
+            assertThat(
+                getValuesList(resp),
+                equalTo(
+                    List.of(
+                        List.of(0L, "local", "lookup-local"),
+                        Arrays.asList(1L, "remote-1", null)// List.of does not permit nulls
+                    )
+                )
+            );
+        }
+
+        try (EsqlQueryResponse resp = runQuery("""
+            FROM (FROM data | LOOKUP JOIN lookup_local ON key),
+                 (FROM cluster-a:data | LOOKUP JOIN lookup_remote_1 ON key),
+                 (FROM remote-b:data | LOOKUP JOIN lookup_remote_2 ON key)
+            | KEEP key, cluster, location
+            | SORT key
+            """, randomBoolean())) {
+            assertThat(
+                getValuesList(resp),
+                equalTo(
+                    List.of(
+                        //
+                        List.of(0L, "local", "lookup-local"),
+                        List.of(1L, "remote-1", "lookup-remote-1"),
+                        List.of(2L, "remote-2", "lookup-remote-2")
+                    )
+                )
+            );
+        }
+
+        try (EsqlQueryResponse resp = runQuery("""
+            FROM (FROM cluster-a:data | LOOKUP JOIN lookup_remote_all ON key),
+                 (FROM remote-b:data | LOOKUP JOIN lookup_remote_all ON key)
+            | KEEP key, cluster, location
+            | SORT key
+            """, randomBoolean())) {
+            assertThat(
+                getValuesList(resp),
+                equalTo(
+                    List.of(
+                        //
+                        List.of(1L, "remote-1", "lookup-remote-a1"),
+                        List.of(2L, "remote-2", "lookup-remote-a2")
+                    )
+                )
+            );
+        }
+
+        try (EsqlQueryResponse resp = runQuery("""
+            FROM *:data | LOOKUP JOIN lookup_remote_all ON key
+            | KEEP key, cluster, location
+            | SORT key
+            """, randomBoolean())) {
+            assertThat(
+                getValuesList(resp),
+                equalTo(
+                    List.of(
+                        //
+                        List.of(1L, "remote-1", "lookup-remote-a1"),
+                        List.of(2L, "remote-2", "lookup-remote-a2")
+                    )
+                )
+            );
+        }
+
+        try (EsqlQueryResponse resp = runQuery("""
+            FROM data,*:data | LOOKUP JOIN lookup_remote_all ON key
+            | KEEP key, cluster, location
+            | SORT key
+            """, randomBoolean())) {
+            assertThat(
+                getValuesList(resp),
+                equalTo(
+                    List.of(
+                        //
+                        List.of(0L, "local", "lookup-remote-a0"),
+                        List.of(1L, "remote-1", "lookup-remote-a1"),
+                        List.of(2L, "remote-2", "lookup-remote-a2")
+                    )
+                )
+            );
+        }
+
+        try (EsqlQueryResponse resp = runQuery("""
+            ROW key=0::long,cluster="local" | LOOKUP JOIN lookup_remote_all ON key
+            | KEEP key, cluster, location
+            | SORT key
+            """, randomBoolean())) {
+            assertThat(getValuesList(resp), equalTo(List.of(List.of(0L, "local", "lookup-remote-a0"))));
+        }
+    }
+
+    public void testLookupJoinAfterPipelineBreakerAndOtherCommands() throws IOException {
+        setupClusters(3);
+        setSkipUnavailable(REMOTE_CLUSTER_1, false);
+        setSkipUnavailable(REMOTE_CLUSTER_2, false);
+
+        var defaultSettings = Settings.builder();
+        createIndexWithDocument(
+            REMOTE_CLUSTER_1,
+            "data",
+            defaultSettings,
+            Map.of("key", 1, "id", 1, "cluster", "remote-1", "mode", "data-remote-1")
+        );
+        createIndexWithDocument(
+            REMOTE_CLUSTER_2,
+            "data",
+            defaultSettings,
+            Map.of("key", 2, "id", 2, "cluster", "remote-2", "mode", "data-remote-2")
+        );
+
+        var lookupSettings = Settings.builder().put(IndexSettings.MODE.getKey(), IndexMode.LOOKUP);
+        createIndexWithDocument(
+            LOCAL_CLUSTER,
+            "lookup",
+            lookupSettings,
+            Map.of("key", 1, "mode", "local"),
+            Map.of("key", 2, "mode", "local")
+        );
+        createIndexWithDocument(REMOTE_CLUSTER_1, "lookup", lookupSettings, Map.of("key", 1, "mode", "remote"));
+        createIndexWithDocument(REMOTE_CLUSTER_2, "lookup", lookupSettings, Map.of("key", 2, "mode", "remote"));
+
+        expectThrows(
+            VerificationException.class,
+            containsString("LOOKUP JOIN with remote indices can't be executed after [LIMIT 1 BY key, cluster, mode]"),
+            () -> runQuery("""
+                FROM *:data
+                | LIMIT 1 BY key, cluster, mode
+                | RENAME mode AS data_mode
+                | LOOKUP JOIN lookup ON key
+                | KEEP key, cluster, data_mode, mode
+                | SORT key
+                """, randomBoolean())
+        );
+
+        expectThrows(
+            VerificationException.class,
+            containsString("LOOKUP JOIN with remote indices can't be executed after [LIMIT 1 BY id, cluster]"),
+            () -> runQuery("""
+                FROM *:data
+                | LIMIT 1 BY id, cluster
+                | RENAME id AS key
+                | LOOKUP JOIN lookup ON key
+                | KEEP key, cluster, mode
+                | SORT key
+                """, randomBoolean())
+        );
+    }
+
+    @SafeVarargs
+    private void createIndexWithDocument(String clusterAlias, String indexName, Settings.Builder settings, Map<String, Object>... sources) {
         var client = client(clusterAlias);
         client.admin().indices().prepareCreate(indexName).setSettings(settings).get();
-        client.prepareIndex(indexName).setSource(source).get();
-        client.admin().indices().prepareRefresh(indexName).get();
+        var bulk = client.prepareBulk();
+        for (Map<String, Object> source : sources) {
+            bulk.add(client.prepareIndex(indexName).setSource(source));
+        }
+        bulk.setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE).get();
     }
 
     protected Map<String, Object> setupClustersAndLookups() throws IOException {
@@ -633,29 +829,6 @@ public class CrossClusterLookupJoinIT extends AbstractCrossClusterTestCase {
         client.execute(ExecuteEnrichPolicyAction.INSTANCE, new ExecuteEnrichPolicyAction.Request(TEST_REQUEST_TIMEOUT, "hosts"))
             .actionGet();
         assertAcked(client.admin().indices().prepareDelete("hosts"));
-    }
-
-    private static void assertCCSExecutionInfoDetails(EsqlExecutionInfo executionInfo) {
-        assertNotNull(executionInfo);
-        assertThat(executionInfo.overallTook().millis(), greaterThanOrEqualTo(0L));
-        assertTrue(executionInfo.isCrossClusterSearch());
-        List<EsqlExecutionInfo.Cluster> clusters = executionInfo.clusterAliases().stream().map(executionInfo::getCluster).toList();
-
-        for (EsqlExecutionInfo.Cluster cluster : clusters) {
-            assertThat(cluster.getTook().millis(), greaterThanOrEqualTo(0L));
-            assertThat(cluster.getStatus(), equalTo(EsqlExecutionInfo.Cluster.Status.SUCCESSFUL));
-            assertThat(cluster.getSkippedShards(), equalTo(0));
-            assertThat(cluster.getFailedShards(), equalTo(0));
-        }
-    }
-
-    protected void setupAlias(String clusterAlias, String indexName, String aliasName) {
-        Client client = client(clusterAlias);
-        IndicesAliasesRequestBuilder indicesAliasesRequestBuilder = client.admin()
-            .indices()
-            .prepareAliases(TEST_REQUEST_TIMEOUT, TEST_REQUEST_TIMEOUT)
-            .addAliasAction(IndicesAliasesRequest.AliasActions.add().index(indexName).alias(aliasName));
-        assertAcked(client.admin().indices().aliases(indicesAliasesRequestBuilder.request()));
     }
 
     protected void populateEmptyIndices(String clusterAlias, String indexName) {

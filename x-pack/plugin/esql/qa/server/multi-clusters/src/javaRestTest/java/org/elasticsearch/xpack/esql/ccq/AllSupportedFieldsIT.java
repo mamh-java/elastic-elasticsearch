@@ -50,18 +50,18 @@ public class AllSupportedFieldsIT extends AllSupportedFieldsTestCase {
     public void createRemoteIndices() throws IOException {
         if (supportsNodeAssignment()) {
             for (Map.Entry<String, NodeInfo> e : remoteNodeToInfo().entrySet()) {
-                createIndexForNode(remoteClient(), e.getKey(), e.getValue().id(), indexMode());
+                createIndexForNode(remoteClient(), minVersion(), e.getKey(), e.getValue().id(), indexMode());
             }
         } else {
-            createIndexForNode(remoteClient(), null, null, indexMode());
+            createIndexForNode(remoteClient(), minVersion(), null, null, indexMode());
         }
 
         // We need a single lookup index that has the same name across all clusters, as well as a single enrich policy per cluster.
         // We create both only when we're testing LOOKUP mode.
         if (indexExists(remoteClient(), LOOKUP_INDEX_NAME) == false && indexMode() == IndexMode.LOOKUP) {
-            createAllTypesIndex(remoteClient(), LOOKUP_INDEX_NAME, null, indexMode());
-            createAllTypesDoc(remoteClient(), LOOKUP_INDEX_NAME);
-            createEnrichPolicy(remoteClient(), LOOKUP_INDEX_NAME, ENRICH_POLICY_NAME);
+            createAllTypesIndex(remoteClient(), minVersion(), LOOKUP_INDEX_NAME, null, indexMode());
+            createAllTypesDoc(remoteClient(), minVersion(), LOOKUP_INDEX_NAME, indexMode());
+            createEnrichPolicy(remoteClient(), minVersion(), LOOKUP_INDEX_NAME, ENRICH_POLICY_NAME);
         }
     }
 
@@ -103,6 +103,11 @@ public class AllSupportedFieldsIT extends AllSupportedFieldsTestCase {
     }
 
     @Override
+    protected String allIndexPattern() {
+        return "*:%mode%*,%mode%*";
+    }
+
+    @Override
     protected boolean fetchDenseVectorAggMetricDoubleIfFns() throws IOException {
         return super.fetchDenseVectorAggMetricDoubleIfFns()
             && clusterHasCapability(remoteClient(), "GET", "/_query", List.of(), List.of("DENSE_VECTOR_AGG_METRIC_DOUBLE_IF_FNS")).orElse(
@@ -111,14 +116,32 @@ public class AllSupportedFieldsIT extends AllSupportedFieldsTestCase {
     }
 
     @Override
+    protected boolean fetchVectordbDocumentIndexModeSupported() throws IOException {
+        return super.fetchVectordbDocumentIndexModeSupported()
+            && clusterHasCapability(remoteClient(), "PUT", "/{index}", List.of(), List.of("vectordb_document_index_mode")).orElse(false);
+    }
+
+    @Override
+    protected boolean fetchFlattenedDatatypeSortedKeysSupported() throws IOException {
+        return super.fetchFlattenedDatatypeSortedKeysSupported()
+            && clusterHasCapability(remoteClient(), "GET", "/_query", List.of(), List.of("FLATTENED_DATATYPE_SORTED_KEYS")).orElse(false);
+    }
+
+    @Override
     protected boolean fetchAllIsCrossCluster() {
         return true;
+    }
+
+    @Override
+    protected boolean lookupJoinOnAllIndicesSupported() throws IOException {
+        return clusterHasCapability(client(), "GET", "/_query", List.of(), List.of("ENABLE_LOOKUP_JOIN_ON_REMOTE")).orElse(false)
+            && clusterHasCapability(remoteClient(), "GET", "/_query", List.of(), List.of("ENABLE_LOOKUP_JOIN_ON_REMOTE")).orElse(false);
     }
 
     public final void testFetchAllOnlyFromRemotes() throws IOException {
         doTestFetchAll(fromAllQuery("*:%mode%*", """
             , _id, _ignored, _index_mode, _score, _source, _version
             | LIMIT 1000
-            """), remoteNodeToInfo(), allNodeToInfo());
+            """), remoteNodeToInfo(), allNodeToInfo(), false);
     }
 }

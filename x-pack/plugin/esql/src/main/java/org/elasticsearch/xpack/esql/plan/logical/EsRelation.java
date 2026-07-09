@@ -7,24 +7,30 @@
 package org.elasticsearch.xpack.esql.plan.logical;
 
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
+import org.elasticsearch.xpack.esql.core.tree.NodeStringMapper;
 import org.elasticsearch.xpack.esql.core.tree.NodeUtils;
 import org.elasticsearch.xpack.esql.core.tree.Source;
-import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.io.stream.PlanStreamInput;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+/**
+ * Source representing an Elasticsearch index.
+ * <p>
+ * In {@code FROM idx | ...} this corresponds to the {@code FROM}.
+ */
 public class EsRelation extends LeafPlan {
 
     private static final TransportVersion SPLIT_INDICES = TransportVersion.fromName("esql_es_relation_add_split_indices");
@@ -63,10 +69,6 @@ public class EsRelation extends LeafPlan {
     private static EsRelation readFrom(StreamInput in) throws IOException {
         Source source = Source.readFrom((PlanStreamInput) in);
         String indexPattern = in.readString();
-        if (in.getTransportVersion().supports(TransportVersions.V_8_18_0) == false) {
-            // this used to be part of EsIndex deserialization
-            in.readImmutableMap(StreamInput::readString, EsField::readFrom);
-        }
         Map<String, List<String>> originalIndices;
         Map<String, List<String>> concreteIndices;
         if (in.getTransportVersion().supports(SPLIT_INDICES)) {
@@ -79,9 +81,6 @@ public class EsRelation extends LeafPlan {
         Map<String, IndexMode> indexNameWithModes = in.readMap(IndexMode::readFrom);
         List<Attribute> attributes = in.readNamedWriteableCollectionAsList(Attribute.class);
         IndexMode indexMode = IndexMode.fromString(in.readString());
-        if (in.getTransportVersion().supports(TransportVersions.V_8_18_0) == false) {
-            in.readBoolean();
-        }
         return new EsRelation(source, indexPattern, indexMode, originalIndices, concreteIndices, indexNameWithModes, attributes);
     }
 
@@ -89,10 +88,6 @@ public class EsRelation extends LeafPlan {
     public void writeTo(StreamOutput out) throws IOException {
         Source.EMPTY.writeTo(out);
         out.writeString(indexPattern);
-        if (out.getTransportVersion().supports(TransportVersions.V_8_18_0) == false) {
-            // this used to be part of EsIndex serialization
-            out.writeMap(Map.<String, EsField>of(), (o, x) -> x.writeTo(out));
-        }
         if (out.getTransportVersion().supports(SPLIT_INDICES)) {
             out.writeMap(originalIndices, StreamOutput::writeStringCollection);
             out.writeMap(concreteIndices, StreamOutput::writeStringCollection);
@@ -100,9 +95,6 @@ public class EsRelation extends LeafPlan {
         out.writeMap(indexNameWithModes, (o, v) -> IndexMode.writeTo(v, out));
         out.writeNamedWriteableCollection(attrs);
         out.writeString(indexMode.getName());
-        if (out.getTransportVersion().supports(TransportVersions.V_8_18_0) == false) {
-            out.writeBoolean(false);
-        }
     }
 
     @Override
@@ -176,17 +168,66 @@ public class EsRelation extends LeafPlan {
     }
 
     @Override
-    public String nodeString() {
-        return nodeName()
-            + "["
-            + indexPattern
-            + "]"
-            + (indexMode != IndexMode.STANDARD ? "[" + indexMode.name() + "]" : "")
-            + NodeUtils.limitedToString(attrs);
+    public void nodeString(StringBuilder sb, NodeStringFormat format, NodeStringMapper mapper) {
+        sb.append(nodeName()).append('[').append(mapper.index(indexPattern)).append(']');
+        if (indexMode != IndexMode.STANDARD) {
+            sb.append('[').append(indexMode.name()).append(']');
+        }
+        // The concrete indices a pattern resolved to, each routed through the index mapper. Rendered
+        // in both modes — useful when debugging from a failure log. NOTE: this is NEW under the
+        // identity mapper (previously anon-only), so for the cases below EXPLAIN gains a suffix it did
+        // not have before. Shown only when resolution actually changed the pattern (see
+        // resolvedIndicesAddInfo) — an explicit "FROM a,b" that resolves to exactly itself adds only
+        // redundant noise, so it is suppressed.
+        if (resolvedIndicesAddInfo()) {
+            sb.append('[');
+            boolean first = true;
+            for (var e : indexNameWithModes.entrySet()) {
+                if (first == false) {
+                    sb.append(", ");
+                }
+                first = false;
+                sb.append(mapper.index(e.getKey())).append('=').append(e.getValue().name());
+            }
+            sb.append(']');
+        }
+        NodeUtils.toString(sb, attrs, format, mapper);
+    }
+
+    /**
+     * Whether the resolved concrete indices add information beyond the index pattern itself — i.e.
+     * resolution expanded or changed the index NAMES (a wildcard / alias resolving to different
+     * concrete indices). An explicit {@code FROM a,b} that resolves to exactly {@code {a, b}} echoes
+     * the pattern and is suppressed; the relation's {@code indexMode} is already rendered separately,
+     * so a mode difference alone (with the names unchanged) is not on its own informative here.
+     */
+    private boolean resolvedIndicesAddInfo() {
+        if (indexNameWithModes == null || indexNameWithModes.isEmpty()) {
+            return false;
+        }
+        Set<String> patternParts = new HashSet<>();
+        for (String part : indexPattern.split(",")) {
+            patternParts.add(part.trim());
+        }
+        return patternParts.equals(indexNameWithModes.keySet()) == false;
     }
 
     public EsRelation withAttributes(List<Attribute> newAttributes) {
         return new EsRelation(source(), indexPattern, indexMode, originalIndices, concreteIndices, indexNameWithModes, newAttributes);
+    }
+
+    public EsRelation withAdditionalAttributes(List<? extends Attribute> additionalAttributes) {
+        if (additionalAttributes.isEmpty()) {
+            return this;
+        }
+        List<Attribute> newAttrs = new ArrayList<>(attrs.size() + additionalAttributes.size());
+        newAttrs.addAll(attrs);
+        newAttrs.addAll(additionalAttributes);
+        return withAttributes(newAttrs);
+    }
+
+    public EsRelation withAdditionalAttribute(Attribute additionalAttribute) {
+        return withAdditionalAttributes(List.of(additionalAttribute));
     }
 
     public EsRelation withIndexMode(IndexMode indexMode) {

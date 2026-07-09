@@ -10,7 +10,7 @@ package org.elasticsearch.xpack.inference.services.elastic.authorization;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.action.support.SubscribableListener;
+import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.client.internal.OriginSettingClient;
 import org.elasticsearch.common.Randomness;
@@ -22,30 +22,20 @@ import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.tasks.TaskManager;
 import org.elasticsearch.threadpool.Scheduler;
 import org.elasticsearch.xpack.core.ClientHelper;
-import org.elasticsearch.xpack.core.inference.action.StoreInferenceEndpointsAction;
-import org.elasticsearch.xpack.inference.external.http.sender.Sender;
-import org.elasticsearch.xpack.inference.registry.ModelRegistry;
+import org.elasticsearch.xpack.core.inference.action.RefreshAuthorizedEndpointsAction;
 import org.elasticsearch.xpack.inference.services.ServiceComponents;
-import org.elasticsearch.xpack.inference.services.elastic.ElasticInferenceServiceComponents;
 import org.elasticsearch.xpack.inference.services.elastic.ElasticInferenceServiceSettings;
-import org.elasticsearch.xpack.inference.services.elastic.InternalPreconfiguredEndpoints;
 import org.elasticsearch.xpack.inference.services.elastic.ccm.CCMFeature;
 import org.elasticsearch.xpack.inference.services.elastic.ccm.CCMService;
 
-import java.util.EnumSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.stream.Collectors;
 
 import static org.elasticsearch.xpack.inference.InferencePlugin.UTILITY_THREAD_POOL_NAME;
-import static org.elasticsearch.xpack.inference.services.elastic.ElasticInferenceService.IMPLEMENTED_TASK_TYPES;
 
 public class AuthorizationPoller extends AllocatedPersistentTask {
 
@@ -54,15 +44,11 @@ public class AuthorizationPoller extends AllocatedPersistentTask {
     private static final Logger logger = LogManager.getLogger(AuthorizationPoller.class);
 
     private final ServiceComponents serviceComponents;
-    private final ModelRegistry modelRegistry;
-    private final ElasticInferenceServiceAuthorizationRequestHandler authorizationHandler;
-    private final Sender sender;
     private final Runnable callback;
     private final AtomicReference<Scheduler.ScheduledCancellable> lastAuthTask = new AtomicReference<>(null);
     private final AtomicBoolean shutdown = new AtomicBoolean(false);
     private final ElasticInferenceServiceSettings elasticInferenceServiceSettings;
     private final AtomicBoolean initialized = new AtomicBoolean(false);
-    private final ElasticInferenceServiceComponents elasticInferenceServiceComponents;
     private final Client client;
     private final CountDownLatch receivedFirstAuthResponseLatch = new CountDownLatch(1);
     private final CCMFeature ccmFeature;
@@ -72,10 +58,7 @@ public class AuthorizationPoller extends AllocatedPersistentTask {
 
     public record Parameters(
         ServiceComponents serviceComponents,
-        ElasticInferenceServiceAuthorizationRequestHandler authorizationRequestHandler,
-        Sender sender,
         ElasticInferenceServiceSettings elasticInferenceServiceSettings,
-        ModelRegistry modelRegistry,
         Client client,
         CCMFeature ccmFeature,
         CCMService ccmService
@@ -89,10 +72,7 @@ public class AuthorizationPoller extends AllocatedPersistentTask {
         this(
             taskFields,
             parameters.serviceComponents,
-            parameters.authorizationRequestHandler,
-            parameters.sender,
             parameters.elasticInferenceServiceSettings,
-            parameters.modelRegistry,
             parameters.client,
             parameters.ccmFeature,
             parameters.ccmService,
@@ -104,10 +84,7 @@ public class AuthorizationPoller extends AllocatedPersistentTask {
     AuthorizationPoller(
         TaskFields taskFields,
         ServiceComponents serviceComponents,
-        ElasticInferenceServiceAuthorizationRequestHandler authorizationRequestHandler,
-        Sender sender,
         ElasticInferenceServiceSettings elasticInferenceServiceSettings,
-        ModelRegistry modelRegistry,
         Client client,
         CCMFeature ccmFeature,
         CCMService ccmService,
@@ -116,13 +93,7 @@ public class AuthorizationPoller extends AllocatedPersistentTask {
     ) {
         super(taskFields.id, taskFields.type, taskFields.action, taskFields.description, taskFields.parentTask, taskFields.headers);
         this.serviceComponents = Objects.requireNonNull(serviceComponents);
-        this.authorizationHandler = Objects.requireNonNull(authorizationRequestHandler);
-        this.sender = Objects.requireNonNull(sender);
         this.elasticInferenceServiceSettings = Objects.requireNonNull(elasticInferenceServiceSettings);
-        this.elasticInferenceServiceComponents = new ElasticInferenceServiceComponents(
-            elasticInferenceServiceSettings.getElasticInferenceServiceUrl()
-        );
-        this.modelRegistry = Objects.requireNonNull(modelRegistry);
         this.client = new OriginSettingClient(Objects.requireNonNull(client), ClientHelper.INFERENCE_ORIGIN);
         this.ccmFeature = Objects.requireNonNull(ccmFeature);
         this.ccmService = Objects.requireNonNull(ccmService);
@@ -227,145 +198,51 @@ public class AuthorizationPoller extends AllocatedPersistentTask {
         }
     }
 
-    private void scheduleAndSendAuthorizationRequest() {
+    // default for testing
+    void scheduleAndSendAuthorizationRequest() {
         if (shutdown.get()) {
             return;
         }
 
+        if (ccmFeature.isCcmSupportedEnvironment() == false) {
+            scheduleNextAndSend();
+            return;
+        }
+
+        ccmService.isEnabled(ActionListener.wrap(enabled -> {
+            if (enabled == null || enabled == false) {
+                logger.info("Skipping sending authorization request and completing task, because CCM is not enabled");
+                shutdownInternal(this::markAsCompleted);
+                return;
+            }
+            scheduleNextAndSend();
+        }, e -> {
+            logger.atWarn().withThrowable(e).log("Failed to determine whether CCM is enabled");
+            // keep polling: skip this cycle's send but schedule the next attempt
+            scheduleAuthorizationRequest();
+        }));
+    }
+
+    private void scheduleNextAndSend() {
         scheduleAuthorizationRequest();
         sendAuthorizationRequest();
     }
 
     // default for testing
     void sendAuthorizationRequest() {
-        var finalListener = ActionListener.<Void>running(() -> {
-            if (callback != null) {
-                callback.run();
-            }
-            receivedFirstAuthResponseLatch.countDown();
-        }).delegateResponse((delegate, e) -> {
-            logger.atWarn().withThrowable(e).log("Failed processing EIS preconfigured endpoints");
-            delegate.onResponse(null);
-        });
-
-        shouldSendAuthRequest(ActionListener.wrap(action -> action.accept(finalListener), e -> {
-            logger.atWarn().withThrowable(e).log("Failed determining whether to send authorization request");
-            finalListener.onFailure(e);
-        }));
-    }
-
-    private class ShutdownAction implements Consumer<ActionListener<Void>> {
-        @Override
-        public void accept(ActionListener<Void> listener) {
-            logger.info("Skipping sending authorization request and completing task, because poller is shutting down");
-            // We should already be shutdown, so this should just be a noop
-            shutdownInternal(AuthorizationPoller.this::markAsCompleted);
-            listener.onResponse(null);
-        }
-    }
-
-    private record RegistryNotReadyAction() implements Consumer<ActionListener<Void>> {
-        @Override
-        public void accept(ActionListener<Void> listener) {
-            logger.info("Skipping sending authorization request, because model registry is not ready");
-            listener.onResponse(null);
-        }
-    }
-
-    private class SendAuthRequestAction implements Consumer<ActionListener<Void>> {
-        @Override
-        public void accept(ActionListener<Void> listener) {
-            sendRequest(listener);
-        }
-    }
-
-    private class CCMDisabledAction implements Consumer<ActionListener<Void>> {
-        @Override
-        public void accept(ActionListener<Void> listener) {
-            logger.info("Skipping sending authorization request and completing task, because CCM is not enabled");
-            shutdownInternal(AuthorizationPoller.this::markAsCompleted);
-            listener.onResponse(null);
-        }
-    }
-
-    private void shouldSendAuthRequest(ActionListener<Consumer<ActionListener<Void>>> listener) {
-        if (shutdown.get()) {
-            listener.onResponse(new ShutdownAction());
-            return;
-        }
-        if (modelRegistry.isReady() == false) {
-            listener.onResponse(new RegistryNotReadyAction());
-            return;
-        }
-        if (ccmFeature.isCcmSupportedEnvironment() == false) {
-            listener.onResponse(new SendAuthRequestAction());
-            return;
-        }
-
-        ccmService.isEnabled(listener.delegateFailureAndWrap((delegate, enabled) -> {
-            if (enabled == null || enabled == false) {
-                delegate.onResponse(new CCMDisabledAction());
-                return;
-            }
-            delegate.onResponse(new SendAuthRequestAction());
-        }));
-    }
-
-    private void sendRequest(ActionListener<Void> listener) {
-        SubscribableListener.<ElasticInferenceServiceAuthorizationModel>newForked(
-            authModelListener -> authorizationHandler.getAuthorization(authModelListener, sender)
-        )
-            .andThenApply(this::getNewInferenceEndpointsToStore)
-            .<Void>andThen((storeListener, newInferenceIds) -> storePreconfiguredModels(newInferenceIds, storeListener))
-            .addListener(listener);
-    }
-
-    private Set<String> getNewInferenceEndpointsToStore(ElasticInferenceServiceAuthorizationModel authModel) {
-        logger.debug("Received authorization response, {}", authModel);
-        var scopedAuthModel = authModel.newLimitedToTaskTypes(EnumSet.copyOf(IMPLEMENTED_TASK_TYPES));
-        logger.debug("Authorization entity limited to service task types, {}", scopedAuthModel);
-
-        var authorizedModelIds = scopedAuthModel.getAuthorizedModelIds();
-        logger.debug("Authorized model IDs from EIS: {}", authorizedModelIds);
-        var existingInferenceIds = modelRegistry.getInferenceIds();
-
-        var newInferenceIds = authorizedModelIds.stream()
-            .map(InternalPreconfiguredEndpoints::getWithModelName)
-            .flatMap(List::stream)
-            .map(model -> model.configurations().getInferenceEntityId())
-            .collect(Collectors.toSet());
-
-        newInferenceIds.removeAll(existingInferenceIds);
-        return newInferenceIds;
-    }
-
-    private void storePreconfiguredModels(Set<String> newInferenceIds, ActionListener<Void> listener) {
-        if (newInferenceIds.isEmpty()) {
-            listener.onResponse(null);
-            return;
-        }
-
-        logger.info("Storing new EIS preconfigured inference endpoints with inference IDs {}", newInferenceIds);
-        var modelsToAdd = PreconfiguredEndpointModelAdapter.getModels(newInferenceIds, elasticInferenceServiceComponents);
-        var storeRequest = new StoreInferenceEndpointsAction.Request(modelsToAdd, TimeValue.THIRTY_SECONDS);
-
-        ActionListener<StoreInferenceEndpointsAction.Response> logResultsListener = ActionListener.wrap(responses -> {
-            for (var response : responses.getResults()) {
-                if (response.failed()) {
-                    logger.atWarn()
-                        .withThrowable(response.failureCause())
-                        .log("Failed to store new EIS preconfigured inference endpoint with inference ID [{}]", response.inferenceId());
-                } else {
-                    logger.atInfo()
-                        .log("Successfully stored EIS preconfigured inference endpoint with inference ID [{}]", response.inferenceId());
+        var finalListener = ActionListener.runAfter(
+            ActionListener.<ActionResponse.Empty>wrap(
+                ignored -> {},
+                e -> logger.atWarn().withThrowable(e).log("Failed processing EIS preconfigured endpoints")
+            ),
+            () -> {
+                if (callback != null) {
+                    callback.run();
                 }
+                receivedFirstAuthResponseLatch.countDown();
             }
-        }, e -> logger.atWarn().withThrowable(e).log("Failed to store new EIS preconfigured inference endpoints [{}]", newInferenceIds));
-
-        client.execute(
-            StoreInferenceEndpointsAction.INSTANCE,
-            storeRequest,
-            ActionListener.runAfter(logResultsListener, () -> listener.onResponse(null))
         );
+
+        client.execute(RefreshAuthorizedEndpointsAction.INSTANCE, new RefreshAuthorizedEndpointsAction.Request(), finalListener);
     }
 }

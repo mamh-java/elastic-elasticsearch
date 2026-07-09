@@ -12,20 +12,23 @@ package org.elasticsearch.search.vectors;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.search.Query;
+import org.elasticsearch.index.codec.vectors.VectorTestUtils;
 
 public class DenseVectorQueryFloatsTests extends AbstractDenseVectorQueryTestCase {
     @Override
     DenseVectorQuery getDenseVectorQuery(String field, float[] query) {
-        return new DenseVectorQuery.Floats(query, field);
+        return new DenseVectorQuery.Floats(query, field, null);
+    }
+
+    @Override
+    DenseVectorQuery getDenseVectorQuery(String field, float[] query, Query filter) {
+        return new DenseVectorQuery.Floats(query, field, filter);
     }
 
     @Override
     float[] randomVector(int dim) {
-        float[] vector = new float[dim];
-        for (int i = 0; i < vector.length; i++) {
-            vector[i] = randomFloat();
-        }
-        return vector;
+        return VectorTestUtils.randomFloatVector(dim);
     }
 
     @Override

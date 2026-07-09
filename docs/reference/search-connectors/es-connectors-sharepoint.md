@@ -16,10 +16,6 @@ Looking for the SharePoint **Online** connector? See the [SharePoint Online refe
 
 ::::
 
-::::{important}
-As of Elastic 9.0, managed connectors on Elastic Cloud Hosted are no longer available. All connectors must be [self-managed](/reference/search-connectors/self-managed-connectors.md).
-::::
-
 ## **Self-managed connector reference** [es-connectors-sharepoint-connector-client-reference]
 
 ### Availability and prerequisites [es-connectors-sharepoint-client-availability-prerequisites]
@@ -39,7 +35,7 @@ This connector is in **beta** and is subject to change. Beta features are subjec
 
 To create a new SharePoint Server connector:
 
-1. In the Kibana UI, navigate to the **Search → Content → Connectors** page from the main menu, or use the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects).
+1. In the Kibana UI, search for "connectors" using the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects) and choose the "Elasticsearch" connectors.
 2. Follow the instructions to create a new  **SharePoint Server** self-managed connector.
 
 
@@ -268,7 +264,7 @@ The connector syncs the following SharePoint object types:
 * Document Libraries and its attachment content(include Web Pages)
 
 ::::{note}
-* Content from files bigger than 10 MB won’t be extracted by default. Use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
+* Content from files bigger than 8 MiB won’t be extracted by default. Use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
 * Permissions are not synced. **All documents** indexed to an Elastic deployment will be visible to **all users with access** to that Elasticsearch Index.
 
 ::::

@@ -11,10 +11,6 @@ The *Elastic Google Drive connector* is a [connector](/reference/search-connecto
 
 View the [**source code** for this connector](https://github.com/elastic/connectors/tree/main/app/connectors_service/connectors/sources/google_drive) (branch *main*, compatible with Elastic *9.0*).
 
-::::{important}
-As of Elastic 9.0, managed connectors on Elastic Cloud Hosted are no longer available. All connectors must be [self-managed](/reference/search-connectors/self-managed-connectors.md).
-::::
-
 ## **Self-managed connector** [es-connectors-google-drive-connector-client-reference]
 
 ### Availability and prerequisites [es-connectors-google-drive-client-availability-and-prerequisites]
@@ -197,7 +193,7 @@ The connector will fetch all files and folders the service account has access to
 It will attempt to extract the content from Google Suite documents (Google Docs, Google Sheets and Google Slides) and regular files.
 
 ::::{note}
-* Content from files bigger than 10 MB won’t be extracted
+* Content from files bigger than 8 MiB won’t be extracted
 * Permissions are not synced by default. You must first enable [DLS](#es-connectors-google-drive-client-document-level-security). Otherwise, **all documents** indexed to an Elastic deployment will be visible to **all users with access** to that Elastic Deployment.
 
 ::::

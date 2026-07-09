@@ -14,7 +14,6 @@ import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchGenerationException;
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.CompositeIndicesRequest;
 import org.elasticsearch.action.DocWriteRequest;
@@ -37,13 +36,13 @@ import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.VersionType;
-import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.ingest.IngestService;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentType;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -76,7 +75,6 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
 
     private static final long SHALLOW_SIZE = RamUsageEstimator.shallowSizeOfInstance(IndexRequest.class);
 
-    private static final TransportVersion PIPELINES_HAVE_RUN_FIELD_ADDED = TransportVersions.V_8_10_X;
     private static final TransportVersion INDEX_REQUEST_INCLUDE_TSID = TransportVersion.fromName("index_request_include_tsid");
     private static final TransportVersion INDEX_SOURCE = TransportVersion.fromName("index_source");
     static final TransportVersion INGEST_REQUEST_DYNAMIC_TEMPLATE_PARAMS = TransportVersion.fromName(
@@ -102,6 +100,7 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
     private String id;
     @Nullable
     private String routing;
+    private boolean routingFromSlice;
 
     private final IndexSource indexSource;
 
@@ -153,9 +152,11 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
     private Map<String, Map<String, String>> dynamicTemplateParams = Map.of();
 
     /**
-     * rawTimestamp field is used on the coordinate node, it doesn't need to be serialised.
+     * rawTimestamp and timeSeriesTimestamp fields are used on the coordinate node,
+     * they don't need to be serialised.
      */
     private Object rawTimestamp;
+    private Instant timeSeriesTimestamp;
     private BytesRef tsid;
 
     public IndexRequest(StreamInput in) throws IOException {
@@ -164,10 +165,6 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
 
     public IndexRequest(@Nullable ShardId shardId, StreamInput in) throws IOException {
         super(shardId, in);
-        if (in.getTransportVersion().before(TransportVersions.V_8_0_0)) {
-            String type = in.readOptionalString();
-            assert MapperService.SINGLE_MAPPING_NAME.equals(type) : "Expected [_doc] but received [" + type + "]";
-        }
         id = in.readOptionalString();
         routing = in.readOptionalString();
         boolean beforeSourceContext = in.getTransportVersion().supports(INDEX_SOURCE) == false;
@@ -202,38 +199,16 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
         ifPrimaryTerm = in.readVLong();
         requireAlias = in.readBoolean();
         dynamicTemplates = in.readMap(StreamInput::readString);
-        if (in.getTransportVersion().onOrAfter(PIPELINES_HAVE_RUN_FIELD_ADDED)
-            && in.getTransportVersion().before(TransportVersions.V_8_13_0)) {
-            in.readBoolean(); // obsolete, prior to tracking normalisedBytesParsed
+        this.listExecutedPipelines = in.readBoolean();
+        if (listExecutedPipelines) {
+            List<String> possiblyImmutableExecutedPipelines = in.readOptionalCollectionAsList(StreamInput::readString);
+            this.executedPipelines = possiblyImmutableExecutedPipelines == null
+                ? null
+                : new ArrayList<>(possiblyImmutableExecutedPipelines);
         }
-        if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_12_0)) {
-            this.listExecutedPipelines = in.readBoolean();
-            if (listExecutedPipelines) {
-                List<String> possiblyImmutableExecutedPipelines = in.readOptionalCollectionAsList(StreamInput::readString);
-                this.executedPipelines = possiblyImmutableExecutedPipelines == null
-                    ? null
-                    : new ArrayList<>(possiblyImmutableExecutedPipelines);
-            }
-        }
-        if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
-            requireDataStream = in.readBoolean();
-        } else {
-            requireDataStream = false;
-        }
+        requireDataStream = in.readBoolean();
 
-        if (in.getTransportVersion().before(TransportVersions.V_8_17_0)) {
-            if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
-                in.readZLong(); // obsolete normalisedBytesParsed
-            }
-            if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_16_0)) {
-                in.readBoolean(); // obsolete originatesFromUpdateByScript
-                in.readBoolean(); // obsolete originatesFromUpdateByDoc
-            }
-        }
-
-        if (in.getTransportVersion().supports(TransportVersions.V_8_18_0)) {
-            includeSourceOnError = in.readBoolean();
-        } // else default value is true
+        includeSourceOnError = in.readBoolean();
 
         if (in.getTransportVersion().supports(INDEX_REQUEST_INCLUDE_TSID)) {
             tsid = in.readBytesRefOrNullIfEmpty();
@@ -382,6 +357,23 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
     }
 
     /**
+     * Marks whether the effective routing value was provided via the {@code _slice} API parameter.
+     */
+    @Override
+    public IndexRequest setRoutingFromSlice(boolean routingFromSlice) {
+        this.routingFromSlice = routingFromSlice;
+        return this;
+    }
+
+    /**
+     * Returns {@code true} when this request routing came from the {@code _slice} API parameter.
+     */
+    @Override
+    public boolean isRoutingFromSlice() {
+        return routingFromSlice;
+    }
+
+    /**
      * When {@link IndexMetadata#INDEX_DIMENSIONS} is populated,
      * the coordinating node will calculate _tsid during routing and set it on the request.
      * For time series indices where the setting is not populated, the _tsid will be created in the data node during document parsing.
@@ -464,7 +456,7 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
     }
 
     public Map<String, Object> sourceAsMap() {
-        return indexSource.sourceAsMap();
+        return indexSource.sourceAsMap(includeSourceOnError);
     }
 
     /**
@@ -770,9 +762,6 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
     }
 
     private void writeBody(StreamOutput out) throws IOException {
-        if (out.getTransportVersion().before(TransportVersions.V_8_0_0)) {
-            out.writeOptionalString(MapperService.SINGLE_MAPPING_NAME);
-        }
         out.writeOptionalString(id);
         out.writeOptionalString(routing);
         if (out.getTransportVersion().supports(INDEX_SOURCE)) {
@@ -801,33 +790,14 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
         out.writeVLong(ifPrimaryTerm);
         out.writeBoolean(requireAlias);
         out.writeMap(dynamicTemplates, StreamOutput::writeString);
-        if (out.getTransportVersion().onOrAfter(PIPELINES_HAVE_RUN_FIELD_ADDED)
-            && out.getTransportVersion().before(TransportVersions.V_8_13_0)) {
-            out.writeBoolean(false); // obsolete, prior to tracking normalisedBytesParsed
-        }
-        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_12_0)) {
-            out.writeBoolean(listExecutedPipelines);
-            if (listExecutedPipelines) {
-                out.writeOptionalCollection(executedPipelines, StreamOutput::writeString);
-            }
+        out.writeBoolean(listExecutedPipelines);
+        if (listExecutedPipelines) {
+            out.writeOptionalCollection(executedPipelines, StreamOutput::writeString);
         }
 
-        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
-            out.writeBoolean(requireDataStream);
-        }
+        out.writeBoolean(requireDataStream);
 
-        if (out.getTransportVersion().before(TransportVersions.V_8_17_0)) {
-            if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
-                out.writeZLong(-1);  // obsolete normalisedBytesParsed
-            }
-            if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_16_0)) {
-                out.writeBoolean(false); // obsolete originatesFromUpdateByScript
-                out.writeBoolean(false); // obsolete originatesFromUpdateByDoc
-            }
-        }
-        if (out.getTransportVersion().supports(TransportVersions.V_8_18_0)) {
-            out.writeBoolean(includeSourceOnError);
-        }
+        out.writeBoolean(includeSourceOnError);
         if (out.getTransportVersion().supports(INDEX_REQUEST_INCLUDE_TSID)) {
             out.writeBytesRef(tsid);
         }
@@ -867,8 +837,12 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
     }
 
     @Override
-    public void onRetry() {
-        isRetry = true;
+    public void onRetry(boolean possiblyExecuted) {
+        // Monotonic: once set, isRetry must stay true. A later retry with markAsRetry=false
+        // cannot undo the fact that an earlier retry may have executed the request.
+        if (possiblyExecuted) {
+            isRetry = true;
+        }
     }
 
     /**
@@ -1009,6 +983,19 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
     public void setRawTimestamp(Object rawTimestamp) {
         assert this.rawTimestamp == null : "rawTimestamp only set in ingest phase, it can't be set twice";
         this.rawTimestamp = rawTimestamp;
+    }
+
+    public void setTimeSeriesTimestamp(Instant tsTimestamp) {
+        this.timeSeriesTimestamp = tsTimestamp;
+    }
+
+    /**
+     * NOTE: this field is not serialisable.
+     * @return the cached timestamp or null.
+     */
+    @Nullable
+    public Instant getTimeSeriesTimestamp() {
+        return timeSeriesTimestamp;
     }
 
     /**

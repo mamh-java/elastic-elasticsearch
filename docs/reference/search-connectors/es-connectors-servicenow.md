@@ -13,10 +13,6 @@ This connector is written in Python using the [Elastic connector framework](http
 
 View the [**source code** for this connector](https://github.com/elastic/connectors/tree/main/app/connectors_service/connectors/sources/servicenow) (branch *main*, compatible with Elastic *9.0*).
 
-::::{important}
-As of Elastic 9.0, managed connectors on Elastic Cloud Hosted are no longer available. All connectors must be [self-managed](/reference/search-connectors/self-managed-connectors.md).
-::::
-
 ## **Self-managed connector** [es-connectors-servicenow-connector-client-reference]
 
 ### Availability and prerequisites [es-connectors-servicenow-client-availability-prerequisites]
@@ -31,7 +27,7 @@ The ServiceNow connector was introduced in Elastic version 8.9.0. This connector
 
 To create a new ServiceNow connector:
 
-1. In the Kibana UI, navigate to the **Search → Content → Connectors** page from the main menu, or use the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects).
+1. In the Kibana UI, search for "connectors" using the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects) and choose the "Elasticsearch" connectors.
 2. Follow the instructions to create a new  **ServiceNow** self-managed connector.
 
 
@@ -173,7 +169,7 @@ All services and records the user has access to will be indexed according to the
 * Attachments
 
 ::::{note}
-* Content from files bigger than 10 MB won’t be extracted. Use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
+* Content from files bigger than 8 MiB won’t be extracted. Use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
 * Permissions are not synced by default. You must enable [document level security](/reference/search-connectors/document-level-security.md). Otherwise, **all documents** indexed to an Elastic deployment will be visible to **all users with access** to that Elastic Deployment.
 
 ::::

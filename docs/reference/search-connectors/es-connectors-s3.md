@@ -8,10 +8,6 @@ mapped_pages:
 
 The *Elastic S3 connector* is a [connector](/reference/search-connectors/index.md) for [Amazon S3](https://aws.amazon.com/s3/) data sources.
 
-::::{important}
-As of Elastic 9.0, managed connectors on Elastic Cloud Hosted are no longer available. All connectors must be [self-managed](/reference/search-connectors/self-managed-connectors.md).
-::::
-
 ## **Self-managed connector reference** [es-connectors-s3-connector-client-reference]
 
 ### Availability and prerequisites [es-connectors-s3-client-prerequisites]
@@ -26,7 +22,7 @@ This connector is available as a self-managed connector. This self-managed conne
 
 To create a new Amazon S3 connector:
 
-1. In the Kibana UI, navigate to the **Search → Content → Connectors** page from the main menu, or use the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects).
+1. In the Kibana UI, search for "connectors" using the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects) and choose the "Elasticsearch" connectors.
 2. Follow the instructions to create a new  **Amazon S3** self-managed connector.
 
 
@@ -235,7 +231,7 @@ We also have a quickstart self-managed option using Docker Compose, so you can s
 ### Documents and syncs [es-connectors-s3-client-documents-syncs]
 
 ::::{note}
-* Content from files bigger than 10 MB won’t be extracted by default. You can use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
+* Content from files bigger than 8 MiB won’t be extracted by default. You can use the [self-managed local extraction service](/reference/search-connectors/es-connectors-content-extraction.md#es-connectors-content-extraction-local) to handle larger binary files.
 * Permissions are not synced. **All documents** indexed to an Elastic deployment will be visible to **all users with access** to that Elastic Deployment.
 
 ::::

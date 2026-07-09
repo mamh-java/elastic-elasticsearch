@@ -20,12 +20,14 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.search.DummyQueryBuilder;
 import org.elasticsearch.search.SearchService;
+import org.elasticsearch.search.crossproject.CrossProjectModeDecider;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.TransportVersionUtils;
 import org.elasticsearch.test.transport.MockTransportService;
 import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
+import org.junit.After;
 
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
@@ -38,9 +40,8 @@ public class TransportFieldCapabilitiesActionTests extends ESTestCase {
 
     private final ThreadPool threadPool = new TestThreadPool(getClass().getName());
 
-    @Override
-    public void tearDown() throws Exception {
-        super.tearDown();
+    @After
+    public void closeThreadPool() throws Exception {
         ThreadPool.terminate(threadPool, 10, TimeUnit.SECONDS);
     }
 
@@ -64,7 +65,7 @@ public class TransportFieldCapabilitiesActionTests extends ESTestCase {
             fieldCapsRequest.indexFilter(new DummyQueryBuilder() {
                 @Override
                 protected void doWriteTo(StreamOutput out) throws IOException {
-                    if (out.getTransportVersion().before(transportVersion)) {
+                    if (out.getTransportVersion().supports(transportVersion) == false) {
                         throw new IllegalArgumentException("This query isn't serializable before transport version " + transportVersion);
                     }
                 }
@@ -84,7 +85,8 @@ public class TransportFieldCapabilitiesActionTests extends ESTestCase {
                 actionFilters,
                 indicesService,
                 null,
-                null
+                null,
+                CrossProjectModeDecider.NOOP
             );
 
             IllegalArgumentException ex = safeAwaitFailure(

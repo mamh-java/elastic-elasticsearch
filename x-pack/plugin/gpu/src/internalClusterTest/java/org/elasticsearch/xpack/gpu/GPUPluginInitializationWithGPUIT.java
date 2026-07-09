@@ -7,15 +7,15 @@
 
 package org.elasticsearch.xpack.gpu;
 
-import com.nvidia.cuvs.GPUInfo;
-import com.nvidia.cuvs.GPUInfoProvider;
-
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.gpu.GPUSupport;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
+import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldTypeTests;
 import org.elasticsearch.index.mapper.vectors.VectorsFormatProvider;
 import org.elasticsearch.indices.IndicesService;
+import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.junit.After;
@@ -27,20 +27,21 @@ import static org.elasticsearch.xpack.gpu.TestVectorsFormatUtils.randomGPUSuppor
 
 public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
 
-    static {
-        TestCuVSServiceProvider.mockedGPUInfoProvider = p -> new TestCuVSServiceProvider.TestGPUInfoProvider(
-            List.of(
-                new GPUInfo(
-                    0,
-                    "TestGPU",
-                    8 * 1024 * 1024 * 1024L,
-                    GPUInfoProvider.MIN_COMPUTE_CAPABILITY_MAJOR,
-                    GPUInfoProvider.MIN_COMPUTE_CAPABILITY_MINOR,
-                    true,
-                    true
-                )
-            )
-        );
+    private static class TestGPUSupport implements GPUSupport {
+        @Override
+        public boolean isSupported() {
+            return true;
+        }
+
+        @Override
+        public long getTotalGpuMemory() {
+            return 8 * 1024 * 1024 * 1024L;
+        }
+
+        @Override
+        public String getGpuName() {
+            return "TestGPU";
+        }
     }
 
     private static boolean isGpuIndexingFeatureAllowed = true;
@@ -49,12 +50,18 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
     public static class TestGPUPlugin extends GPUPlugin {
 
         public TestGPUPlugin() {
-            super(Settings.builder().put("vectors.indexing.use_gpu", gpuMode.name()).build());
+            super(Settings.builder().put("vectors.indexing.use_gpu", gpuMode.name()).build(), new TestGPUSupport());
         }
 
         @Override
         protected boolean isGpuIndexingFeatureAllowed() {
             return GPUPluginInitializationWithGPUIT.isGpuIndexingFeatureAllowed;
+        }
+
+        @Override
+        public List<ActionPlugin.ActionHandler> getActions() {
+            // Skip registering xpack usage/info actions in this test as they require XPackLicenseState
+            return List.of();
         }
     }
 
@@ -69,21 +76,9 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         return List.of(TestGPUPlugin.class);
     }
 
-    // Feature flag disabled tests
-    public void testFFOff() {
-        assumeFalse("GPU_FORMAT feature flag disabled", GPUPlugin.GPU_FORMAT.isEnabled());
-
-        GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
-        VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
-
-        var format = vectorsFormatProvider.getKnnVectorsFormat(null, null, null);
-        assertNull(format);
-    }
-
     // AUTO mode tests
     public void testAutoModeSupportedVectorType() {
         gpuMode = GPUPlugin.GpuMode.AUTO;
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
 
         GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
@@ -95,14 +90,16 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
         );
         assertNotNull(format);
     }
 
     public void testAutoModeUnsupportedVectorType() {
         gpuMode = GPUPlugin.GpuMode.AUTO;
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
 
         GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
@@ -114,7 +111,36 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
+        );
+        assertNull(format);
+    }
+
+    public void testAutoModeUnsupportedElementType() {
+        gpuMode = GPUPlugin.GpuMode.AUTO;
+
+        GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
+        VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
+
+        createIndex("index1");
+        IndexSettings settings = getIndexSettings();
+        final var indexOptions = DenseVectorFieldTypeTests.randomGpuSupportedIndexOptions();
+        final var unsupportedElementType = randomFrom(
+            DenseVectorFieldMapper.ElementType.BYTE,
+            DenseVectorFieldMapper.ElementType.BFLOAT16,
+            DenseVectorFieldMapper.ElementType.BIT
+        );
+
+        var format = vectorsFormatProvider.getKnnVectorsFormat(
+            settings,
+            indexOptions,
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            unsupportedElementType,
+            null,
+            1
         );
         assertNull(format);
     }
@@ -122,7 +148,6 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
     public void testAutoModeLicenseNotSupported() {
         gpuMode = GPUPlugin.GpuMode.AUTO;
         isGpuIndexingFeatureAllowed = false;
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
 
         GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
@@ -134,7 +159,10 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
         );
         assertNull(format);
     }
@@ -142,7 +170,6 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
     // TRUE mode tests
     public void testTrueModeSupportedVectorType() {
         gpuMode = GPUPlugin.GpuMode.TRUE;
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
 
         GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
@@ -154,14 +181,16 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
         );
         assertNotNull(format);
     }
 
     public void testTrueModeUnsupportedVectorType() {
         gpuMode = GPUPlugin.GpuMode.TRUE;
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
 
         GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
@@ -173,7 +202,36 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
+        );
+        assertNull(format);
+    }
+
+    public void testTrueModeUnsupportedElementType() {
+        gpuMode = GPUPlugin.GpuMode.TRUE;
+
+        GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
+        VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
+
+        createIndex("index1");
+        IndexSettings settings = getIndexSettings();
+        final var indexOptions = DenseVectorFieldTypeTests.randomGpuSupportedIndexOptions();
+        final var unsupportedElementType = randomFrom(
+            DenseVectorFieldMapper.ElementType.BYTE,
+            DenseVectorFieldMapper.ElementType.BFLOAT16,
+            DenseVectorFieldMapper.ElementType.BIT
+        );
+
+        var format = vectorsFormatProvider.getKnnVectorsFormat(
+            settings,
+            indexOptions,
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            unsupportedElementType,
+            null,
+            1
         );
         assertNull(format);
     }
@@ -181,7 +239,6 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
     public void testTrueModeLicenseNotSupported() {
         gpuMode = GPUPlugin.GpuMode.TRUE;
         isGpuIndexingFeatureAllowed = false;
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
 
         GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
@@ -193,7 +250,10 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
         );
         assertNull(format);
     }
@@ -201,7 +261,6 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
     // FALSE mode tests
     public void testFalseModeNeverUsesGpu() {
         gpuMode = GPUPlugin.GpuMode.FALSE;
-        assumeTrue("GPU_FORMAT feature flag enabled", GPUPlugin.GPU_FORMAT.isEnabled());
 
         GPUPlugin gpuPlugin = internalCluster().getInstance(TestGPUPlugin.class);
         VectorsFormatProvider vectorsFormatProvider = gpuPlugin.getVectorsFormatProvider();
@@ -213,7 +272,10 @@ public class GPUPluginInitializationWithGPUIT extends ESIntegTestCase {
         var format = vectorsFormatProvider.getKnnVectorsFormat(
             settings,
             indexOptions,
-            randomGPUSupportedSimilarity(indexOptions.getType())
+            randomGPUSupportedSimilarity(indexOptions.getType()),
+            DenseVectorFieldMapper.ElementType.FLOAT,
+            null,
+            1
         );
         assertNull(format);
     }

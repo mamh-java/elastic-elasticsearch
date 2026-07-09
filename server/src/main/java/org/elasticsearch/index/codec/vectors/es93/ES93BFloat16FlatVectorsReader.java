@@ -33,6 +33,8 @@ import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.internal.hppc.IntObjectHashMap;
+import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.KnnCollector;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.DataAccessHint;
 import org.apache.lucene.store.FileDataHint;
@@ -49,21 +51,22 @@ import java.util.Map;
 
 import static org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader.readSimilarityFunction;
 import static org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsReader.readVectorEncoding;
+import static org.elasticsearch.index.codec.vectors.VectorScoringUtils.scoreAndCollectAll;
 
 public final class ES93BFloat16FlatVectorsReader extends FlatVectorsReader {
 
     private static final long SHALLOW_SIZE = RamUsageEstimator.shallowSizeOfInstance(ES93BFloat16FlatVectorsReader.class);
 
     private final IntObjectHashMap<FieldEntry> fields = new IntObjectHashMap<>();
+    private final FlatVectorsScorer vectorScorer;
     private final IndexInput vectorData;
     private final FieldInfos fieldInfos;
     private final IOContext dataContext;
 
     public ES93BFloat16FlatVectorsReader(SegmentReadState state, FlatVectorsScorer scorer) throws IOException {
-        super(scorer);
         int versionMeta = readMetadata(state);
         this.fieldInfos = state.fieldInfos;
-        boolean success = false;
+        this.vectorScorer = scorer;
         // Flat formats are used to randomly access vectors from their node ID that is stored
         // in the HNSW graph.
         dataContext = state.context.withHints(FileTypeHint.DATA, FileDataHint.KNN_VECTORS, DataAccessHint.RANDOM);
@@ -75,11 +78,9 @@ public final class ES93BFloat16FlatVectorsReader extends FlatVectorsReader {
                 ES93BFloat16FlatVectorsFormat.VECTOR_DATA_CODEC_NAME,
                 dataContext
             );
-            success = true;
-        } finally {
-            if (success == false) {
-                IOUtils.closeWhileHandlingException(this);
-            }
+        } catch (Throwable t) {
+            IOUtils.closeWhileHandlingException(this);
+            throw t;
         }
     }
 
@@ -120,7 +121,6 @@ public final class ES93BFloat16FlatVectorsReader extends FlatVectorsReader {
     ) throws IOException {
         String fileName = IndexFileNames.segmentFileName(state.segmentInfo.name, state.segmentSuffix, fileExtension);
         IndexInput in = state.directory.openInput(fileName, context);
-        boolean success = false;
         try {
             int versionVectorData = CodecUtil.checkIndexHeader(
                 in,
@@ -137,12 +137,10 @@ public final class ES93BFloat16FlatVectorsReader extends FlatVectorsReader {
                 );
             }
             CodecUtil.retrieveChecksum(in);
-            success = true;
             return in;
-        } finally {
-            if (success == false) {
-                IOUtils.closeWhileHandlingException(in);
-            }
+        } catch (Throwable t) {
+            IOUtils.closeWhileHandlingException(in);
+            throw t;
         }
     }
 
@@ -178,6 +176,11 @@ public final class ES93BFloat16FlatVectorsReader extends FlatVectorsReader {
         // Update the read advice since vectors are guaranteed to be accessed sequentially for merge
         vectorData.updateIOContext(dataContext.withHints(DataAccessHint.SEQUENTIAL));
         return this;
+    }
+
+    @Override
+    public void search(String field, float[] target, KnnCollector knnCollector, AcceptDocs acceptDocs) throws IOException {
+        scoreAndCollectAll(knnCollector, acceptDocs, getFloatVectorValues(field).scorer(target));
     }
 
     private FieldEntry getFieldEntryOrThrow(String field) {
@@ -218,6 +221,11 @@ public final class ES93BFloat16FlatVectorsReader extends FlatVectorsReader {
     @Override
     public ByteVectorValues getByteVectorValues(String field) throws IOException {
         throw new IllegalStateException(field + " only supports float vectors");
+    }
+
+    @Override
+    public FlatVectorsScorer getFlatVectorScorer(String field) throws IOException {
+        return vectorScorer;
     }
 
     @Override

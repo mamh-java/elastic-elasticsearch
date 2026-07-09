@@ -20,7 +20,7 @@ This connector is available as a self-managed connector. This self-managed conne
 
 To create a new Oracle connector:
 
-1. In the Kibana UI, navigate to the **Search → Content → Connectors** page from the main menu, or use the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects).
+1. In the Kibana UI, search for "connectors" using the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects) and choose the "Elasticsearch" connectors.
 2. Follow the instructions to create a new  **Oracle** self-managed connector.
 
 
@@ -266,7 +266,7 @@ We also have a quickstart self-managed option using Docker Compose, so you can s
 * The `sys` user is not supported, as it contains 1000+ system tables. If you need to work with the `sys` user, use either `sysdba` or `sysoper` and configure this as the username.
 
 ::::{note}
-* Files bigger than 10 MB won’t be extracted.
+* Files bigger than 8 MiB won’t be extracted.
 * Permissions are not synced. **All documents** indexed to an Elastic deployment will be visible to **all users with access** to that Elastic Deployment.
 
 ::::

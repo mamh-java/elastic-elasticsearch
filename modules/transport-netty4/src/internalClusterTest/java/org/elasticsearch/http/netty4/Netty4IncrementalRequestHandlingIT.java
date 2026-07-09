@@ -41,21 +41,17 @@ import org.apache.logging.log4j.Level;
 import org.elasticsearch.ESNetty4IntegTestCase;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.bulk.IncrementalBulkService;
 import org.elasticsearch.action.support.ActionTestUtils;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.client.internal.node.NodeClient;
-import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.ReleasableBytesReference;
 import org.elasticsearch.common.collect.Iterators;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
-import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
-import org.elasticsearch.common.settings.ClusterSettings;
-import org.elasticsearch.common.settings.IndexScopedSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.CollectionUtils;
@@ -70,7 +66,6 @@ import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.rest.BaseRestHandler;
 import org.elasticsearch.rest.RestChannel;
-import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestHandler;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.RestResponse;
@@ -530,7 +525,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
     }
 
     public void testBulkIndexingRequestSplitting() throws Exception {
-        final var watermarkBytes = between(100, 200);
+        final var watermarkBytes = between(100, 2000);
         final var tinyNode = internalCluster().startCoordinatingOnlyNode(
             Settings.builder()
                 .put(IndexingPressure.SPLIT_BULK_LOW_WATERMARK.getKey(), ByteSizeValue.ofBytes(watermarkBytes))
@@ -546,7 +541,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
             final var channel = clientContext.channel();
             channel.writeAndFlush(request);
 
-            final var indexName = randomIdentifier();
+            final var indexName = randomIndexName();
             final var indexCreatedListener = ClusterServiceUtils.addTemporaryStateListener(
                 cs -> Iterators.filter(
                     cs.metadata().indicesAllProjects().iterator(),
@@ -558,13 +553,21 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
             final var valueLength = between(10, 30);
             final var docSizeBytes = "{'field':''}".length() + valueLength;
-            final var itemCount = between(watermarkBytes / docSizeBytes + 1, 300); // enough to split at least once
+            final var minItemCount = watermarkBytes / docSizeBytes + 1;
+            final var itemCount = between(minItemCount, minItemCount * 2); // enough to split at least once
             assertThat(itemCount * docSizeBytes, greaterThan(watermarkBytes));
             for (int i = 0; i < itemCount; i++) {
                 channel.write(new DefaultHttpContent(Unpooled.wrappedBuffer(Strings.format("""
                     {"index":{"_index":"%s"}}
                     {"field":"%s"}
                     """, indexName, randomAlphaOfLength(valueLength)).getBytes(StandardCharsets.UTF_8))));
+
+                if (i == minItemCount && randomBoolean()) {
+                    channel.flush();
+                    if (randomBoolean()) {
+                        safeAwait(indexCreatedListener);
+                    }
+                }
             }
 
             channel.flush();
@@ -592,6 +595,135 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
             } finally {
                 response.release();
             }
+        }
+    }
+
+    /**
+     * Verifies that when the incremental-bulk request timeout ({@link IncrementalBulkService#REQUEST_TIMEOUT}) elapses
+     * before any sub-request is dispatched, the whole request fails as a global failure: the session task is cancelled
+     * and the resulting {@code TaskCancelledException} is surfaced to the client as a top-level
+     * {@link RestStatus#TOO_MANY_REQUESTS} (429) rather than a per-item failure.
+     *
+     * <p>The entire body is sent as a single last chunk only after the timeout has fired, so no split/sub-request is ever
+     * submitted — exercising the {@code globalFailure} path in {@code IncrementalBulkService.Handler}.
+     */
+    public void testRequestTimeoutReturnsTooManyRequests() throws Exception {
+        final var nodeName = internalCluster().getRandomNodeName();
+        final var timeout = TimeValue.timeValueMillis(100);
+        updateClusterSettings(Settings.builder().put(IncrementalBulkService.REQUEST_TIMEOUT.getKey(), timeout));
+        try (var clientContext = newClientContext(nodeName, cause -> ExceptionsHelper.maybeDieOnAnotherThread(new AssertionError(cause)))) {
+            final var request = new DefaultHttpRequest(HTTP_1_1, POST, "/_bulk");
+            request.headers().add(CONTENT_TYPE, APPLICATION_JSON);
+
+            final var bulkContent = buffered(bulkRandomDoc(randomIndexName(), randomUUID()));
+            HttpUtil.setContentLength(request, bulkContent.readableBytes());
+
+            // Sending the headers makes RestBulkAction accept the channel, build the Handler and arm the request timeout.
+            final var channel = clientContext.channel();
+            channel.writeAndFlush(request);
+
+            // Wait well past the timeout so the scheduled cancellation has fired before we send any item.
+            safeSleep(timeout.millis() * 10);
+
+            // The whole body arrives as a single last chunk: no sub-request is ever submitted, so the cancelled session
+            // produces a top-level failure -> HTTP 429 (the globalFailure path).
+            channel.writeAndFlush(new DefaultLastHttpContent(bulkContent));
+
+            final var response = clientContext.getNextResponse();
+            try {
+                assertEquals(RestStatus.TOO_MANY_REQUESTS.getStatus(), response.status().code());
+            } finally {
+                response.release();
+            }
+        } finally {
+            updateClusterSettings(Settings.builder().putNull(IncrementalBulkService.REQUEST_TIMEOUT.getKey()));
+        }
+    }
+
+    private static byte[] utf8bytes(String s) {
+        return s.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static String bulkRandomDoc(String index, String docId) {
+        return Strings.format("""
+             {"index":{"_index":"%s","_id":"%s"}}
+             {"field":"%s"}
+            """, index, docId, randomAlphanumericOfLength(between(10, 100)));
+    }
+
+    private static ByteBuf buffered(String s) {
+        return Unpooled.wrappedBuffer(utf8bytes(s));
+    }
+
+    /**
+     * Verifies that when the request timeout elapses after at least one sub-request has already been submitted, the
+     * request does not fail globally: items indexed before the timeout are preserved and the timeout instead surfaces as
+     * a per-item failure. The client receives HTTP 200 with {@code errors: true}, where the item committed before the
+     * timeout reports {@link RestStatus#CREATED} (201) and the item submitted after the timeout reports
+     * {@link RestStatus#TOO_MANY_REQUESTS} (429).
+     *
+     * <p>The 1-byte {@code split_bulk} watermarks force the first chunk to split into a sub-request immediately, so the
+     * "before-timeout" document is durably indexed (asserted via the realtime GET) before the session is cancelled.
+     */
+    public void testRequestTimeoutPartialResponse() throws Exception {
+        final var nodeName = internalCluster().startCoordinatingOnlyNode(
+            Settings.builder()
+                .put(IndexingPressure.SPLIT_BULK_LOW_WATERMARK.getKey(), "1b")
+                .put(IndexingPressure.SPLIT_BULK_LOW_WATERMARK_SIZE.getKey(), "1b")
+                .put(IndexingPressure.SPLIT_BULK_HIGH_WATERMARK.getKey(), "1b")
+                .put(IndexingPressure.SPLIT_BULK_HIGH_WATERMARK_SIZE.getKey(), "1b")
+                .build()
+        );
+        final var index = randomIndexName();
+        createIndex(index);
+        final var timeout = TimeValue.timeValueSeconds(between(1, 3));
+        updateClusterSettings(Settings.builder().put(IncrementalBulkService.REQUEST_TIMEOUT.getKey(), timeout));
+        try (var clientContext = newClientContext(nodeName, cause -> ExceptionsHelper.maybeDieOnAnotherThread(new AssertionError(cause)))) {
+            final var request = new DefaultHttpRequest(HTTP_1_1, POST, "/_bulk");
+            request.headers().add(CONTENT_TYPE, APPLICATION_JSON);
+
+            final var beforeTimeoutDoc = buffered(bulkRandomDoc(index, "before-timeout"));
+            final var afterTimeoutDoc = buffered(bulkRandomDoc(index, "after-timeout"));
+            HttpUtil.setContentLength(request, beforeTimeoutDoc.readableBytes() + afterTimeoutDoc.readableBytes());
+
+            final var channel = clientContext.channel();
+            channel.writeAndFlush(request);
+
+            // First chunk: 1b watermarks force an immediate split -> sub-request submitted, doc indexed.
+            channel.writeAndFlush(new DefaultHttpContent(beforeTimeoutDoc));
+
+            // Wait until the first sub-request committed so the doc is durable and survives the descendant-cancellation
+            // that fires with the timeout, then wait past the timeout so the session is cancelled before the final chunk.
+            assertBusy(() -> assertTrue(client().prepareGet(index, "before-timeout").setRealtime(true).get().isExists()));
+            safeSleep(timeout);
+
+            channel.writeAndFlush(new DefaultLastHttpContent(afterTimeoutDoc));
+
+            final var response = clientContext.getNextResponse();
+            try {
+                assertEquals(RestStatus.OK.getStatus(), response.status().code());
+                final var copy = response.content().copy(); // Netty4Utils doesn't handle direct buffers, copy to heap
+                final ObjectPath body;
+                try {
+                    body = ObjectPath.createFromXContent(JsonXContent.jsonXContent, Netty4Utils.toBytesReference(copy));
+                } finally {
+                    copy.release();
+                }
+                assertTrue(body.evaluate("errors"));
+                assertEquals(2, body.evaluateArraySize("items"));
+                assertEquals(
+                    RestStatus.CREATED.getStatus(),
+                    (int) asInstanceOf(int.class, body.evaluateExact("items", "0", "index", "status"))
+                );
+                assertEquals(
+                    RestStatus.TOO_MANY_REQUESTS.getStatus(),
+                    (int) asInstanceOf(int.class, body.evaluateExact("items", "1", "index", "status"))
+                );
+            } finally {
+                response.release();
+            }
+        } finally {
+            updateClusterSettings(Settings.builder().putNull(IncrementalBulkService.REQUEST_TIMEOUT.getKey()));
         }
     }
 
@@ -924,13 +1056,7 @@ public class Netty4IncrementalRequestHandlingIT extends ESNetty4IntegTestCase {
 
         @Override
         public Collection<RestHandler> getRestHandlers(
-            Settings settings,
-            NamedWriteableRegistry namedWriteableRegistry,
-            RestController restController,
-            ClusterSettings clusterSettings,
-            IndexScopedSettings indexScopedSettings,
-            SettingsFilter settingsFilter,
-            IndexNameExpressionResolver indexNameExpressionResolver,
+            RestHandlersServices restHandlersServices,
             Supplier<DiscoveryNodes> nodesInCluster,
             Predicate<NodeFeature> clusterSupportsFeature
         ) {

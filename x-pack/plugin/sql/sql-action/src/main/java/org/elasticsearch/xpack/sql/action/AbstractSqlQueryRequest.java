@@ -510,4 +510,5 @@ public abstract class AbstractSqlQueryRequest extends AbstractSqlRequest impleme
             runtimeMappings
         );
     }
+
 }

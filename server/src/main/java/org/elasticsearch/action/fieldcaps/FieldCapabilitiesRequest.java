@@ -10,11 +10,10 @@
 package org.elasticsearch.action.fieldcaps;
 
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.IndicesRequest;
-import org.elasticsearch.action.LegacyActionRequest;
 import org.elasticsearch.action.ResolvedIndexExpressions;
+import org.elasticsearch.action.UntypedActionRequest;
 import org.elasticsearch.action.ValidateActions;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.common.Strings;
@@ -22,6 +21,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.search.crossproject.TargetProjects;
 import org.elasticsearch.tasks.CancellableTask;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.tasks.TaskId;
@@ -37,7 +37,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-public final class FieldCapabilitiesRequest extends LegacyActionRequest implements IndicesRequest.Replaceable, ToXContentObject {
+public final class FieldCapabilitiesRequest extends UntypedActionRequest implements IndicesRequest.Replaceable, ToXContentObject {
     public static final String NAME = "field_caps_request";
     public static final IndicesOptions DEFAULT_INDICES_OPTIONS = IndicesOptions.strictExpandOpenAndForbidClosed();
 
@@ -55,6 +55,8 @@ public final class FieldCapabilitiesRequest extends LegacyActionRequest implemen
     private boolean includeEmptyFields = true;
     @Nullable
     private ResolvedIndexExpressions resolvedIndexExpressions = null;
+    @Nullable
+    private transient TargetProjects resolvedTargetProjects = null;
     /**
      * Controls whether the field caps response should always include the list of indices
      * where a field is defined. This flag is only used locally on the coordinating node,
@@ -89,13 +91,9 @@ public final class FieldCapabilitiesRequest extends LegacyActionRequest implemen
         indexFilter = in.readOptionalNamedWriteable(QueryBuilder.class);
         nowInMillis = in.readOptionalLong();
         runtimeFields = in.readGenericMap();
-        if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_2_0)) {
-            filters = in.readStringArray();
-            types = in.readStringArray();
-        }
-        if (in.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
-            includeEmptyFields = in.readBoolean();
-        }
+        filters = in.readStringArray();
+        types = in.readStringArray();
+        includeEmptyFields = in.readBoolean();
         if (in.getTransportVersion().supports(FIELD_CAPS_ADD_CLUSTER_ALIAS)) {
             clusterAlias = in.readOptionalString();
         } else {
@@ -133,7 +131,7 @@ public final class FieldCapabilitiesRequest extends LegacyActionRequest implemen
         this.clusterAlias = clusterAlias;
     }
 
-    String clusterAlias() {
+    public String clusterAlias() {
         return clusterAlias;
     }
 
@@ -148,13 +146,9 @@ public final class FieldCapabilitiesRequest extends LegacyActionRequest implemen
         out.writeOptionalNamedWriteable(indexFilter);
         out.writeOptionalLong(nowInMillis);
         out.writeGenericMap(runtimeFields);
-        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_2_0)) {
-            out.writeStringArray(filters);
-            out.writeStringArray(types);
-        }
-        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_13_0)) {
-            out.writeBoolean(includeEmptyFields);
-        }
+        out.writeStringArray(filters);
+        out.writeStringArray(types);
+        out.writeBoolean(includeEmptyFields);
         if (out.getTransportVersion().supports(FIELD_CAPS_ADD_CLUSTER_ALIAS)) {
             out.writeOptionalString(clusterAlias);
         }
@@ -280,6 +274,17 @@ public final class FieldCapabilitiesRequest extends LegacyActionRequest implemen
         return resolvedIndexExpressions;
     }
 
+    @Override
+    public void setResolvedTargetProjects(TargetProjects targetProjects) {
+        this.resolvedTargetProjects = targetProjects;
+    }
+
+    @Override
+    @Nullable
+    public TargetProjects getResolvedTargetProjects() {
+        return resolvedTargetProjects;
+    }
+
     public void projectRouting(@Nullable String projectRouting) {
         if (this.projectRouting != null) {
             throw new IllegalArgumentException("project_routing is already set to [" + this.projectRouting + "]");
@@ -354,6 +359,13 @@ public final class FieldCapabilitiesRequest extends LegacyActionRequest implemen
         ActionRequestValidationException validationException = null;
         if (fields == null || fields.length == 0) {
             validationException = ValidateActions.addValidationError("no fields specified", validationException);
+        }
+        if (projectRouting != null && indicesOptions.resolveCrossProjectIndexExpression() == false) {
+            validationException = ValidateActions.addValidationError(
+                "Unknown key for a VALUE_STRING in [project_routing]",
+                validationException
+            );
+
         }
         return validationException;
     }

@@ -13,9 +13,10 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.ExponentialHistogramBlock;
+import org.elasticsearch.compute.data.HistogramBlock;
 import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
-import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -28,6 +29,8 @@ import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.expression.function.FunctionInfo;
 import org.elasticsearch.xpack.esql.expression.function.Param;
 import org.elasticsearch.xpack.esql.expression.function.scalar.EsqlScalarFunction;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
+import org.elasticsearch.xpack.esql.expression.promql.function.PromqlFunctionDefinition;
 import org.elasticsearch.xpack.esql.io.stream.PlanStreamInput;
 
 import java.io.IOException;
@@ -41,7 +44,7 @@ import static org.elasticsearch.xpack.esql.core.type.DataType.DOUBLE;
 import static org.elasticsearch.xpack.esql.core.type.DataType.INTEGER;
 
 /**
- * Extracts a {@link org.elasticsearch.compute.data.ExponentialHistogramBlock.Component} from an exponential histogram.
+ * Extracts a {@link org.elasticsearch.compute.data.HistogramBlock.Component} from a histogram (either exponential histogram or TDigest).
  * Note that this function is currently only intended for usage in surrogates and not available as a user-facing function.
  * Therefore, it is intentionally not registered in {@link org.elasticsearch.xpack.esql.expression.function.EsqlFunctionRegistry}.
  */
@@ -52,6 +55,33 @@ public class ExtractHistogramComponent extends EsqlScalarFunction {
         "ExtractHistogramComponent",
         ExtractHistogramComponent::new
     );
+
+    public static final PromqlFunctionDefinition PROMQL_HISTOGRAM_COUNT = PromqlFunctionDefinition.def()
+        .histogramUnary((source, field) -> ExtractHistogramComponent.create(source, field, ExponentialHistogramBlock.Component.COUNT))
+        .description("Returns the count of observations stored in a native histogram.")
+        .example("histogram_count(increase(http_request_duration_seconds[5m]))")
+        .stack(PromqlFunctionDefinition.STACK_GA_9_5)
+        .name("histogram_count");
+
+    public static final PromqlFunctionDefinition PROMQL_HISTOGRAM_SUM = PromqlFunctionDefinition.def()
+        .histogramUnary((source, field) -> ExtractHistogramComponent.create(source, field, ExponentialHistogramBlock.Component.SUM))
+        .description("Returns the sum of observations stored in a native histogram.")
+        .example("histogram_sum(increase(http_request_duration_seconds[5m]))")
+        .stack(PromqlFunctionDefinition.STACK_GA_9_5)
+        .name("histogram_sum");
+
+    public static final PromqlFunctionDefinition PROMQL_HISTOGRAM_AVG = PromqlFunctionDefinition.def()
+        .histogramUnary(
+            (source, field) -> new Div(
+                source,
+                ExtractHistogramComponent.create(source, field, ExponentialHistogramBlock.Component.SUM),
+                ExtractHistogramComponent.create(source, field, ExponentialHistogramBlock.Component.COUNT)
+            )
+        )
+        .description("Returns the arithmetic average of observations stored in a native histogram.")
+        .example("histogram_avg(increase(http_request_duration_seconds[5m]))")
+        .stack(PromqlFunctionDefinition.STACK_GA_9_5)
+        .name("histogram_avg");
 
     private final Expression field;
     private final Expression componentOrdinal;
@@ -64,10 +94,10 @@ public class ExtractHistogramComponent extends EsqlScalarFunction {
      * @param componentOrdinal The {@link org.elasticsearch.compute.data.ExponentialHistogramBlock.Component#ordinal()}
      *                         as integer-expression, must be foldable
      */
-    @FunctionInfo(returnType = { "double" })
+    @FunctionInfo(returnType = { "double" }, briefSummary = "Extracts a component value from a histogram.")
     public ExtractHistogramComponent(
         Source source,
-        @Param(name = "histogram", type = { "exponential_histogram" }) Expression field,
+        @Param(name = "histogram", type = { "exponential_histogram", "tdigest" }) Expression field,
         @Param(name = "component", type = { "integer" }) Expression componentOrdinal
     ) {
         super(source, List.of(field, componentOrdinal));
@@ -87,7 +117,7 @@ public class ExtractHistogramComponent extends EsqlScalarFunction {
         return field;
     }
 
-    Expression componentOrdinal() {
+    public Expression componentOrdinal() {
         return componentOrdinal;
     }
 
@@ -99,7 +129,7 @@ public class ExtractHistogramComponent extends EsqlScalarFunction {
         if (ordinal == null) {
             return null;
         }
-        return ExponentialHistogramBlock.Component.values()[ordinal.intValue()];
+        return HistogramBlock.Component.values()[ordinal.intValue()];
     }
 
     @Override
@@ -136,10 +166,11 @@ public class ExtractHistogramComponent extends EsqlScalarFunction {
     protected TypeResolution resolveType() {
         TypeResolution histoTypeCheck = isType(
             field,
-            dt -> dt == DataType.EXPONENTIAL_HISTOGRAM,
+            dt -> dt == DataType.EXPONENTIAL_HISTOGRAM || dt == DataType.TDIGEST,
             sourceText(),
             FIRST,
-            "exponential_histogram"
+            "exponential_histogram",
+            "tdigest"
         );
         TypeResolution componentOrdinalCheck = isType(componentOrdinal, dt -> dt == DataType.INTEGER, sourceText(), SECOND, "integer").and(
             isFoldable(componentOrdinal, sourceText(), SECOND)
@@ -153,9 +184,9 @@ public class ExtractHistogramComponent extends EsqlScalarFunction {
     }
 
     @Override
-    public EvalOperator.ExpressionEvaluator.Factory toEvaluator(ToEvaluator toEvaluator) {
+    public ExpressionEvaluator.Factory toEvaluator(ToEvaluator toEvaluator) {
         var fieldEvaluator = toEvaluator.apply(field);
-        return new EvalOperator.ExpressionEvaluator.Factory() {
+        return new ExpressionEvaluator.Factory() {
 
             @Override
             public String toString() {
@@ -163,22 +194,22 @@ public class ExtractHistogramComponent extends EsqlScalarFunction {
             }
 
             @Override
-            public EvalOperator.ExpressionEvaluator get(DriverContext context) {
+            public ExpressionEvaluator get(DriverContext context) {
                 return new Evaluator(fieldEvaluator.get(context), component());
             }
         };
     }
 
-    private record Evaluator(EvalOperator.ExpressionEvaluator fieldEvaluator, ExponentialHistogramBlock.Component componentToExtract)
+    private record Evaluator(ExpressionEvaluator fieldEvaluator, ExponentialHistogramBlock.Component componentToExtract)
         implements
-            EvalOperator.ExpressionEvaluator {
+            ExpressionEvaluator {
 
         private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(Evaluator.class);
 
         @Override
         public Block eval(Page page) {
             try (Block block = fieldEvaluator.eval(page)) {
-                return ((ExponentialHistogramBlock) block).buildExponentialHistogramComponentBlock(componentToExtract);
+                return ((HistogramBlock) block).buildHistogramComponentBlock(componentToExtract);
             }
         }
 

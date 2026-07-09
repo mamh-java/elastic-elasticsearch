@@ -9,7 +9,6 @@ package org.elasticsearch.xpack.core.ilm;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.TransportVersions;
 import org.elasticsearch.action.downsample.DownsampleConfig;
 import org.elasticsearch.client.internal.Client;
 import org.elasticsearch.cluster.health.ClusterHealthStatus;
@@ -21,7 +20,6 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.TimeValue;
-import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogramInterval;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
@@ -121,9 +119,7 @@ public class DownsampleAction implements LifecycleAction {
     public DownsampleAction(StreamInput in) throws IOException {
         this(
             new DateHistogramInterval(in),
-            in.getTransportVersion().onOrAfter(TransportVersions.V_8_10_X)
-                ? TimeValue.parseTimeValue(in.readString(), WAIT_TIMEOUT_FIELD.getPreferredName())
-                : DEFAULT_WAIT_TIMEOUT,
+            TimeValue.parseTimeValue(in.readString(), WAIT_TIMEOUT_FIELD.getPreferredName()),
             in.getTransportVersion().supports(ILM_FORCE_MERGE_IN_DOWNSAMPLING) ? in.readOptionalBoolean() : null,
             in.getTransportVersion().supports(ADD_SAMPLE_METHOD_DOWNSAMPLE_ILM)
                 ? in.readOptionalWriteable(DownsampleConfig.SamplingMethod::read)
@@ -134,11 +130,7 @@ public class DownsampleAction implements LifecycleAction {
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         fixedInterval.writeTo(out);
-        if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_10_X)) {
-            out.writeString(waitTimeout.getStringRep());
-        } else {
-            out.writeString(DEFAULT_WAIT_TIMEOUT.getStringRep());
-        }
+        out.writeString(waitTimeout.getStringRep());
         if (out.getTransportVersion().supports(ILM_FORCE_MERGE_IN_DOWNSAMPLING)) {
             out.writeOptionalBoolean(forceMergeIndex);
         }
@@ -227,7 +219,7 @@ public class DownsampleAction implements LifecycleAction {
             (index, project) -> {
                 IndexMetadata indexMetadata = project.index(index);
                 assert indexMetadata != null : "invalid cluster metadata. index [" + index.getName() + "] metadata not found";
-                if (IndexSettings.MODE.get(indexMetadata.getSettings()) != IndexMode.TIME_SERIES) {
+                if (IndexSettings.MODE.get(indexMetadata.getSettings()).isTsdb() == false) {
                     return false;
                 }
 
@@ -382,7 +374,7 @@ public class DownsampleAction implements LifecycleAction {
     }
 
     private boolean isForceMergeEnabled() {
-        return forceMergeIndex == null || forceMergeIndex;
+        return forceMergeIndex != null && forceMergeIndex;
     }
 
     @Override

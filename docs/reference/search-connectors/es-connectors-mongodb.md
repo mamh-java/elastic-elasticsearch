@@ -11,10 +11,6 @@ The *Elastic MongoDB connector* is a [connector](/reference/search-connectors/in
 
 View the [**source code** for this connector](https://github.com/elastic/connectors/tree/main/app/connectors_service/connectors/sources/mongo) (branch *main*, compatible with Elastic *9.0*).
 
-::::{important}
-As of Elastic 9.0, managed connectors on Elastic Cloud Hosted are no longer available. All connectors must be [self-managed](/reference/search-connectors/self-managed-connectors.md).
-::::
-
 ## **Self-managed connector** [es-connectors-mongodb-connector-client-reference]
 
 ### Availability and prerequisites [es-connectors-mongodb-client-prerequisites]
@@ -96,7 +92,7 @@ We strongly recommend leaving this option disabled in production environments.
 
 To create a new MongoDB connector:
 
-1. In the Kibana UI, navigate to the **Search → Content → Connectors** page from the main menu, or use the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects).
+1. In the Kibana UI, search for "connectors" using the [global search field](docs-content://explore-analyze/query-filter/filtering.md#_finding_your_apps_and_objects) and choose the "Elasticsearch" connectors.
 2. Follow the instructions to create a new  **MongoDB** self-managed connector.
 
 
@@ -377,7 +373,7 @@ Each sync is a "full" sync. For each MongoDB document discovered:
 This is recursive, because embedded documents can themselves contain embedded documents.
 
 ::::{note}
-* Files bigger than 10 MB won’t be extracted
+* Files bigger than 8 MiB won’t be extracted
 * Permissions are not synced. All documents indexed to an Elastic deployment will be visible to **all users with access** to that Elastic Deployment.
 
 ::::

@@ -27,6 +27,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.env.Environment;
 import org.elasticsearch.index.IndexSettingProviders;
+import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.indices.EmptySystemIndices;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.indices.InvalidIndexTemplateException;
@@ -142,6 +143,76 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         }
     }
 
+    public void testTsdsTemporalityFieldOverrideWithWrongType() throws Exception {
+        final var service = getMetadataIndexTemplateService();
+        ProjectMetadata initialProject = ProjectMetadata.builder(randomProjectIdOrDefault()).build();
+
+        var componentTemplate = new ComponentTemplate(
+            new Template(
+                builder().put("index.mode", "time_series")
+                    .put("index.routing_path", "uid")
+                    .put(IndexSettings.TIME_SERIES_TEMPORALITY_FIELD.getKey(), "temporality")
+                    .build(),
+                new CompressedXContent("""
+                    {
+                      "_doc": {
+                        "properties": {
+                          "@timestamp": { "type": "date" },
+                          "uid": { "type": "keyword", "time_series_dimension": true },
+                          "temporality": { "type": "integer" }
+                        }
+                      }
+                    }"""),
+                null
+            ),
+            null,
+            null
+        );
+        var e = expectThrows(
+            IllegalArgumentException.class,
+            () -> service.addComponentTemplate(initialProject, true, "1", componentTemplate)
+        );
+        assertThat(
+            e.getMessage(),
+            containsString("[index.time_series.temporality_field] field [temporality] must be of type [keyword] but is [integer]")
+        );
+    }
+
+    public void testTsdsTemporalityFieldOverrideWithoutDimension() throws Exception {
+        final var service = getMetadataIndexTemplateService();
+        ProjectMetadata initialProject = ProjectMetadata.builder(randomProjectIdOrDefault()).build();
+
+        var componentTemplate = new ComponentTemplate(
+            new Template(
+                builder().put("index.mode", "time_series")
+                    .put("index.routing_path", "uid")
+                    .put(IndexSettings.TIME_SERIES_TEMPORALITY_FIELD.getKey(), "temporality")
+                    .build(),
+                new CompressedXContent("""
+                    {
+                      "_doc": {
+                        "properties": {
+                          "@timestamp": { "type": "date" },
+                          "uid": { "type": "keyword", "time_series_dimension": true },
+                          "temporality": { "type": "keyword" }
+                        }
+                      }
+                    }"""),
+                null
+            ),
+            null,
+            null
+        );
+        var e = expectThrows(
+            IllegalArgumentException.class,
+            () -> service.addComponentTemplate(initialProject, true, "1", componentTemplate)
+        );
+        assertThat(
+            e.getMessage(),
+            containsString("[index.time_series.temporality_field] field [temporality] must be a [time_series_dimension]")
+        );
+    }
+
     public void testLifecycleComposition() {
         // No lifecycles result to null
         {
@@ -151,12 +222,12 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         // One lifecycle results in this lifecycle as the final
         {
             ResettableValue<List<DataStreamLifecycle.DownsamplingRound>> downsamplingRounds = randomDownsampling();
-            DataStreamLifecycle.Template lifecycle = DataStreamLifecycle.createDataLifecycleTemplate(
-                true,
-                randomRetention(),
-                downsamplingRounds,
-                randomResettable(() -> randomSamplingMethod(downsamplingRounds.get()))
-            );
+            DataStreamLifecycle.Template lifecycle = DataStreamLifecycle.dataLifecycleBuilder()
+                .enabled(true)
+                .dataRetention(randomRetention())
+                .downsamplingRounds(downsamplingRounds)
+                .downsamplingMethod(randomResettable(() -> randomSamplingMethod(downsamplingRounds.get())))
+                .buildTemplate();
             List<DataStreamLifecycle.Template> lifecycles = List.of(lifecycle);
             DataStreamLifecycle result = composeDataLifecycles(lifecycles).build();
             // Defaults to true
@@ -169,12 +240,12 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         // Enabled is always true unless it's explicitly set to false
         {
             List<DataStreamLifecycle.DownsamplingRound> downsamplingRounds = randomRounds();
-            DataStreamLifecycle.Template lifecycle = DataStreamLifecycle.createDataLifecycleTemplate(
-                false,
-                randomPositiveTimeValue(),
-                downsamplingRounds,
-                randomSamplingMethod(downsamplingRounds)
-            );
+            DataStreamLifecycle.Template lifecycle = DataStreamLifecycle.dataLifecycleBuilder()
+                .enabled(false)
+                .dataRetention(randomPositiveTimeValue())
+                .downsamplingRounds(downsamplingRounds)
+                .downsamplingMethod(randomSamplingMethod(downsamplingRounds))
+                .buildTemplate();
             List<DataStreamLifecycle.Template> lifecycles = List.of(lifecycle, DataStreamLifecycle.Template.DATA_DEFAULT);
             DataStreamLifecycle result = composeDataLifecycles(lifecycles).build();
             assertThat(result.enabled(), equalTo(true));
@@ -185,20 +256,22 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         // If both lifecycles have all properties, then the latest one overwrites all the others
         {
             DownsampleConfig.SamplingMethod downsamplingMethod1 = randomFrom(DownsampleConfig.SamplingMethod.LAST_VALUE);
-            DataStreamLifecycle.Template lifecycle1 = DataStreamLifecycle.createDataLifecycleTemplate(
-                false,
-                randomPositiveTimeValue(),
-                randomRounds(),
-                downsamplingMethod1
-            );
-            DataStreamLifecycle.Template lifecycle2 = DataStreamLifecycle.createDataLifecycleTemplate(
-                true,
-                randomPositiveTimeValue(),
-                randomRounds(),
-                downsamplingMethod1 == DownsampleConfig.SamplingMethod.LAST_VALUE
-                    ? DownsampleConfig.SamplingMethod.AGGREGATE
-                    : DownsampleConfig.SamplingMethod.LAST_VALUE
-            );
+            DataStreamLifecycle.Template lifecycle1 = DataStreamLifecycle.dataLifecycleBuilder()
+                .enabled(false)
+                .dataRetention(randomPositiveTimeValue())
+                .downsamplingRounds(randomRounds())
+                .downsamplingMethod(downsamplingMethod1)
+                .buildTemplate();
+            DataStreamLifecycle.Template lifecycle2 = DataStreamLifecycle.dataLifecycleBuilder()
+                .enabled(true)
+                .dataRetention(randomPositiveTimeValue())
+                .downsamplingRounds(randomRounds())
+                .downsamplingMethod(
+                    downsamplingMethod1 == DownsampleConfig.SamplingMethod.LAST_VALUE
+                        ? DownsampleConfig.SamplingMethod.AGGREGATE
+                        : DownsampleConfig.SamplingMethod.LAST_VALUE
+                )
+                .buildTemplate();
             List<DataStreamLifecycle.Template> lifecycles = List.of(lifecycle1, lifecycle2);
             DataStreamLifecycle result = composeDataLifecycles(lifecycles).build();
             assertThat(result.enabled(), equalTo(lifecycle2.enabled()));

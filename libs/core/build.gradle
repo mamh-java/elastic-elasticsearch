@@ -8,6 +8,7 @@
  */
 
 apply plugin: 'elasticsearch.publish'
+apply plugin: 'elasticsearch.foreign-api'
 
 dependencies {
   // This dependency is used only by :libs:core for null-checking interop with other tools
@@ -21,6 +22,7 @@ dependencies {
   testImplementation(project(":test:framework")) {
     exclude group: 'org.elasticsearch', module: 'core'
   }
+  testImplementation('ch.obermuhlner:big-math:2.3.2')
 }
 
 tasks.named('forbiddenApisMain').configure {

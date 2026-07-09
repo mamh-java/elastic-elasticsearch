@@ -14,7 +14,6 @@ import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.codec.vectors.BFloat16;
-import org.elasticsearch.index.codec.vectors.es93.ES93GenericFlatVectorsFormat;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper.ElementType;
 import org.elasticsearch.script.field.vectors.DenseVector;
@@ -26,6 +25,7 @@ import org.junit.Before;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -41,7 +41,6 @@ import static org.elasticsearch.index.IndexSettings.INDEX_MAPPER_SOURCE_MODE_SET
 import static org.elasticsearch.index.IndexSettings.INDEX_MAPPING_EXCLUDE_SOURCE_VECTORS_SETTING;
 import static org.elasticsearch.index.mapper.SourceFieldMapper.Mode.SYNTHETIC;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
-import static org.elasticsearch.xpack.esql.action.EsqlCapabilities.Cap.L2_NORM_VECTOR_SIMILARITY_FUNCTION;
 import static org.hamcrest.Matchers.hasKey;
 
 public class DenseVectorFieldTypeIT extends AbstractEsqlIntegTestCase {
@@ -72,10 +71,7 @@ public class DenseVectorFieldTypeIT extends AbstractEsqlIntegTestCase {
     @ParametersFactory
     public static Iterable<Object[]> parameters() {
         List<Object[]> params = new ArrayList<>();
-        ElementType[] elementTypes = ES93GenericFlatVectorsFormat.GENERIC_VECTOR_FORMAT.isEnabled()
-            ? ElementType.values()
-            : new ElementType[] { ElementType.BYTE, ElementType.FLOAT, ElementType.BIT };
-        for (ElementType elementType : elementTypes) {
+        for (ElementType elementType : ElementType.values()) {
             // Test all similarities
             for (DenseVectorFieldMapper.VectorSimilarity similarity : DenseVectorFieldMapper.VectorSimilarity.values()) {
                 if (elementType == ElementType.BIT && similarity != DenseVectorFieldMapper.VectorSimilarity.L2_NORM) {
@@ -109,8 +105,6 @@ public class DenseVectorFieldTypeIT extends AbstractEsqlIntegTestCase {
     private final Map<Integer, List<Number>> indexedVectors = new HashMap<>();
 
     public void testRetrieveFieldType() {
-        assumeTrue("Need L2_NORM available for dense_vector retrieval", L2_NORM_VECTOR_SIMILARITY_FUNCTION.isEnabled());
-
         var query = """
             FROM test
             """;
@@ -123,8 +117,6 @@ public class DenseVectorFieldTypeIT extends AbstractEsqlIntegTestCase {
 
     @SuppressWarnings("unchecked")
     public void testRetrieveTopNDenseVectorFieldData() {
-        assumeTrue("Need L2_NORM available for dense_vector retrieval", L2_NORM_VECTOR_SIMILARITY_FUNCTION.isEnabled());
-
         var query = """
                 FROM test
                 | KEEP id, vector
@@ -154,8 +146,6 @@ public class DenseVectorFieldTypeIT extends AbstractEsqlIntegTestCase {
 
     @SuppressWarnings("unchecked")
     public void testRetrieveDenseVectorFieldData() {
-        assumeTrue("Need L2_NORM available for dense_vector retrieval", L2_NORM_VECTOR_SIMILARITY_FUNCTION.isEnabled());
-
         var query = """
             FROM test
             | KEEP id, vector
@@ -293,9 +283,9 @@ public class DenseVectorFieldTypeIT extends AbstractEsqlIntegTestCase {
                             for (int k = 0; k < numDims; k++) {
                                 array[k] = vector.get(k).floatValue();
                             }
-                            final ByteBuffer buffer = ByteBuffer.allocate(BFloat16.BYTES * numDims);
-                            BFloat16.floatToBFloat16(array, buffer.asShortBuffer());
-                            yield Base64.getEncoder().encodeToString(buffer.array());
+                            byte[] buffer = new byte[BFloat16.BYTES * numDims];
+                            BFloat16.floatToBFloat16(array, 0, buffer, 0, numDims, ByteOrder.BIG_ENDIAN);
+                            yield Base64.getEncoder().encodeToString(buffer);
                         }
                         case BYTE, BIT -> {
                             byte[] array = new byte[numDims];

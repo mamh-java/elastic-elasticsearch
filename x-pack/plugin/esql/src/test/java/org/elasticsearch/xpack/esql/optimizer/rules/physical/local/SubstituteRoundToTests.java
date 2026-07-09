@@ -12,11 +12,13 @@ import org.elasticsearch.common.logging.LoggerMessageFormat;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.CollectionUtils;
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.core.Strings;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.mapper.DateFieldMapper;
+import org.elasticsearch.index.mapper.blockloader.BlockLoaderFunctionConfig;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.MatchQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
@@ -36,6 +38,7 @@ import org.elasticsearch.xpack.esql.core.expression.ReferenceAttribute;
 import org.elasticsearch.xpack.esql.core.expression.function.Function;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.core.type.FunctionEsField;
 import org.elasticsearch.xpack.esql.expression.function.grouping.Bucket;
 import org.elasticsearch.xpack.esql.expression.function.scalar.date.DateTrunc;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.RoundTo;
@@ -103,6 +106,7 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
 
     private static final Map<String, List<Object>> roundToAllTypes = new HashMap<>(
         Map.ofEntries(
+
             Map.entry("byte", List.of(2, 1, 3, 4)),
             Map.entry("short", List.of(1, 3, 2, 4)),
             Map.entry("integer", List.of(1, 2, 3, 4)),
@@ -197,7 +201,34 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
         }
     }
 
-    // We do not support count pushdown when there is an ES filter at the moment, even if it's on the same field.
+    public void testDateTruncBucketTransformToQueryAndTagsWithWhereClauseOnSameField() {
+        for (String dateHistogram : dateHistograms) {
+            String query = LoggerMessageFormat.format(null, """
+                from test
+                | where date <= "2023-10-22" and date >= "2023-10-21"
+                | stats count(*) by x = {}
+                """, dateHistogram);
+
+            ExchangeExec exchange = validatePlanBeforeExchange(query, DataType.DATETIME, List.of("count(*)"));
+
+            var queryBuilderAndTags = getBuilderAndTagsFromStats(exchange, DataType.DATETIME);
+
+            var expectedQueryBuilderAndTags = List.of(
+                new EsQueryExec.QueryBuilderAndTags(
+                    rangeQuery("date").from("2023-10-21T00:00:00.000Z")
+                        .to("2023-10-22T00:00:00.000Z")
+                        .includeUpper(false)
+                        .timeZone("Z")
+                        .format("strict_date_optional_time")
+                        .boost(0),
+                    List.of(dateTimeToLong("2023-10-21"))
+                ),
+                new EsQueryExec.QueryBuilderAndTags(termQuery("date", "2023-10-22T00:00:00.000Z"), List.of(dateTimeToLong("2023-10-22")))
+            );
+            verifyQueryAndTags(expectedQueryBuilderAndTags, queryBuilderAndTags);
+        }
+    }
+
     public void testDateTruncBucketTransformToQueryAndTagsWithEsFilter() {
         for (String dateHistogram : dateHistograms) {
             String query = LoggerMessageFormat.format(null, """
@@ -207,25 +238,23 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
 
             RangeQueryBuilder esFilter = rangeQuery("date").from("2023-10-21T00:00:00.000Z").to("2023-10-22T00:00:00.000Z");
             ExchangeExec exchange = validatePlanBeforeExchange(query, DataType.DATETIME, List.of("count(*)"), esFilter);
+            var queryBuilderAndTags = getBuilderAndTagsFromStats(exchange, DataType.DATETIME);
 
-            AggregateExec agg = as(exchange.child(), AggregateExec.class);
-            EvalExec evalExec = as(agg.child(), EvalExec.class);
-            List<Alias> aliases = evalExec.fields();
-            assertEquals(1, aliases.size());
-            FieldAttribute roundToTag = as(aliases.get(0).child(), FieldAttribute.class);
-            assertEquals("$$date$round_to$datetime", roundToTag.name());
-            EsQueryExec esQueryExec = as(evalExec.child(), EsQueryExec.class);
-
-            List<EsQueryExec.QueryBuilderAndTags> queryBuilderAndTags = esQueryExec.queryBuilderAndTags();
-            List<EsQueryExec.QueryBuilderAndTags> expectedQueryBuilderAndTags = expectedQueryBuilderAndTags(
-                query,
-                "date",
-                List.of(),
-                new Source(2, 24, dateHistogram),
-                esFilter
+            var expectedQueryBuilderAndTags = List.of(
+                new EsQueryExec.QueryBuilderAndTags(
+                    rangeQuery("date").from("2023-10-21T00:00:00.000Z")
+                        .to("2023-10-22T00:00:00.000Z")
+                        .includeUpper(false)
+                        .format("strict_date_optional_time")
+                        .boost(1),
+                    List.of(dateTimeToLong("2023-10-21"))
+                ),
+                new EsQueryExec.QueryBuilderAndTags(
+                    termQuery("date", "2023-10-22T00:00:00.000Z").boost(1),
+                    List.of(dateTimeToLong("2023-10-22"))
+                )
             );
             verifyQueryAndTags(expectedQueryBuilderAndTags, queryBuilderAndTags);
-            assertThrows(UnsupportedOperationException.class, esQueryExec::query);
         }
     }
 
@@ -263,6 +292,7 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
 
     // DateTrunc is transformed to RoundTo first but cannot be transformed to QueryAndTags, when the TopN is pushed down to EsQueryExec
     public void testDateTruncNotTransformToQueryAndTags() {
+        assumeTrue("ROUND_TO block loader must be enabled", EsqlCapabilities.Cap.ROUND_TO_BLOCK_LOADER.isEnabled());
         for (String dateHistogram : dateHistograms) {
             if (dateHistogram.contains("bucket")) { // bucket cannot be used outside of stats
                 continue;
@@ -285,8 +315,11 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
             EvalExec evalExec = as(fieldExtractExec.child(), EvalExec.class);
             List<Alias> aliases = evalExec.fields();
             assertEquals(1, aliases.size());
-            RoundTo roundTo = as(aliases.getFirst().child(), RoundTo.class);
-            assertEquals(4, roundTo.points().size());
+            FieldAttribute roundTo = as(aliases.getFirst().child(), FieldAttribute.class);
+            assertEquals(
+                4,
+                ((BlockLoaderFunctionConfig.RoundToLongs) ((FunctionEsField) roundTo.field()).functionConfig()).points().length
+            );
             fieldExtractExec = as(evalExec.child(), FieldExtractExec.class);
             EsQueryExec esQueryExec = as(fieldExtractExec.child(), EsQueryExec.class);
             List<EsQueryExec.QueryBuilderAndTags> queryBuilderAndTags = esQueryExec.queryBuilderAndTags();
@@ -351,24 +384,67 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
 
                 ExchangeExec exchange = validatePlanBeforeExchange(query, DataType.DATETIME);
 
-                AggregateExec agg = as(exchange.child(), AggregateExec.class);
-                EvalExec eval = as(agg.child(), EvalExec.class);
-                List<Alias> aliases = eval.fields();
-                assertEquals(1, aliases.size());
-                FieldAttribute roundToTag = as(aliases.get(0).child(), FieldAttribute.class);
-                assertEquals("$$date$round_to$datetime", roundToTag.name());
-                EsQueryExec esQueryExec = as(eval.child(), EsQueryExec.class);
+                if (otherPushDownFunction.getKey().contains("keyword")) {
+                    AggregateExec agg = as(exchange.child(), AggregateExec.class);
+                    EvalExec eval = as(agg.child(), EvalExec.class);
+                    List<Alias> aliases = eval.fields();
+                    assertEquals(1, aliases.size());
+                    FieldAttribute roundToTag = as(aliases.get(0).child(), FieldAttribute.class);
+                    assertEquals("$$date$round_to$datetime", roundToTag.name());
+                    EsQueryExec esQueryExec = as(eval.child(), EsQueryExec.class);
 
-                List<EsQueryExec.QueryBuilderAndTags> queryBuilderAndTags = esQueryExec.queryBuilderAndTags();
-                List<EsQueryExec.QueryBuilderAndTags> expectedQueryBuilderAndTags = expectedQueryBuilderAndTags(
-                    query,
-                    "date",
-                    List.of(),
-                    new Source(3, 24, dateHistogram),
-                    mainQueryBuilder
-                );
-                verifyQueryAndTags(expectedQueryBuilderAndTags, queryBuilderAndTags);
-                assertThrows(UnsupportedOperationException.class, esQueryExec::query);
+                    List<EsQueryExec.QueryBuilderAndTags> queryBuilderAndTags = esQueryExec.queryBuilderAndTags();
+                    List<EsQueryExec.QueryBuilderAndTags> expectedQueryBuilderAndTags = expectedQueryBuilderAndTags(
+                        query,
+                        "date",
+                        List.of(),
+                        new Source(3, 24, dateHistogram),
+                        mainQueryBuilder
+                    );
+                    verifyQueryAndTags(expectedQueryBuilderAndTags, queryBuilderAndTags);
+                    assertThrows(UnsupportedOperationException.class, esQueryExec::query);
+                } else {
+                    var queryBuilderAndTags = getBuilderAndTagsFromStats(exchange, DataType.DATETIME);
+
+                    var expectedQueryBuilderAndTags = List.of(
+                        new EsQueryExec.QueryBuilderAndTags(
+                            rangeQuery("date").from("2023-10-19T00:00:00.000Z")
+                                .to("2023-10-21T00:00:00.000Z")
+                                .includeUpper(false)
+                                .timeZone("Z")
+                                .format("strict_date_optional_time")
+                                .boost(0),
+                            List.of(dateTimeToLong("2023-10-20"))
+                        ),
+                        new EsQueryExec.QueryBuilderAndTags(
+                            rangeQuery("date").from("2023-10-21T00:00:00.000Z")
+                                .includeUpper(false)
+                                .to("2023-10-22T00:00:00.000Z")
+                                .timeZone("Z")
+                                .format("strict_date_optional_time")
+                                .boost(0),
+                            List.of(dateTimeToLong("2023-10-21"))
+                        ),
+                        new EsQueryExec.QueryBuilderAndTags(
+                            rangeQuery("date").from("2023-10-22T00:00:00.000Z")
+                                .includeUpper(false)
+                                .to("2023-10-23T00:00:00.000Z")
+                                .timeZone("Z")
+                                .format("strict_date_optional_time")
+                                .boost(0),
+                            List.of(dateTimeToLong("2023-10-22"))
+                        ),
+                        new EsQueryExec.QueryBuilderAndTags(
+                            rangeQuery("date").from("2023-10-23T00:00:00.000Z")
+                                .to("2023-10-24T00:00:00.000Z")
+                                .timeZone("Z")
+                                .format("strict_date_optional_time")
+                                .boost(0),
+                            List.of(dateTimeToLong("2023-10-23"))
+                        )
+                    );
+                    verifyQueryAndTags(expectedQueryBuilderAndTags, queryBuilderAndTags);
+                }
             }
         }
     }
@@ -710,12 +786,16 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
     }
 
     private static void verifyQueryAndTags(List<EsQueryExec.QueryBuilderAndTags> expected, List<EsQueryExec.QueryBuilderAndTags> actual) {
-        assertEquals(expected.size(), actual.size());
+        assertEquals(
+            Strings.format("Different sizes (%d expected and %d actual):\n%s\n%s", expected.size(), actual.size(), expected, actual),
+            expected.size(),
+            actual.size()
+        );
         for (int i = 0; i < expected.size(); i++) {
             EsQueryExec.QueryBuilderAndTags expectedItem = expected.get(i);
             EsQueryExec.QueryBuilderAndTags actualItem = actual.get(i);
             assertEquals(expectedItem.query().toString(), actualItem.query().toString());
-            assertEquals(expectedItem.tags().getFirst(), actualItem.tags().getFirst());
+            assertEquals(expectedItem.tags(), actualItem.tags());
         }
     }
 
@@ -828,8 +908,7 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
         PhysicalPlan firstBranch = mergeChildren.get(0);
         ProjectExec firstProject = as(firstBranch, ProjectExec.class);
         EvalExec firstEval = as(firstProject.child(), EvalExec.class);
-        LimitExec firstLimit = as(firstEval.child(), LimitExec.class);
-        AggregateExec firstFinalAgg = as(firstLimit.child(), AggregateExec.class);
+        AggregateExec firstFinalAgg = as(firstEval.child(), AggregateExec.class);
         assertThat(firstFinalAgg.getMode(), is(FINAL));
         var firstGroupings = firstFinalAgg.groupings();
         assertThat(firstGroupings, hasSize(1));
@@ -848,8 +927,7 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
         PhysicalPlan secondBranch = mergeChildren.get(1);
         ProjectExec secondProject = as(secondBranch, ProjectExec.class);
         EvalExec secondEval = as(secondProject.child(), EvalExec.class);
-        LimitExec secondLimit = as(secondEval.child(), LimitExec.class);
-        AggregateExec secondFinalAgg = as(secondLimit.child(), AggregateExec.class);
+        AggregateExec secondFinalAgg = as(secondEval.child(), AggregateExec.class);
         assertThat(secondFinalAgg.getMode(), is(FINAL));
         var secondGroupings = secondFinalAgg.groupings();
         assertThat(secondGroupings, hasSize(1));
@@ -868,7 +946,8 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
     }
 
     public void testSubqueryWithCountStarAndDateTrunc() {
-        assumeTrue("requires subqueries in from", EsqlCapabilities.Cap.SUBQUERY_IN_FROM_COMMAND.isEnabled());
+        assumeTrue("Requires subquery in FROM command support", EsqlCapabilities.Cap.SUBQUERY_IN_FROM_COMMAND.isEnabled());
+        assumeTrue("requires subqueries in from", EsqlCapabilities.Cap.SUBQUERY_IN_FROM_COMMAND_WITHOUT_IMPLICIT_LIMIT.isEnabled());
         String query = """
             from test, (from test | stats cnt = count(*) by x = date_trunc(1 day, date))
             | keep x, cnt, date
@@ -883,20 +962,17 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
         assertThat(mergeChildren, hasSize(2));
 
         PhysicalPlan leftBranch = mergeChildren.get(0);
-        ProjectExec leftProject = as(leftBranch, ProjectExec.class);
-        EvalExec leftEval = as(leftProject.child(), EvalExec.class);
-        LimitExec leftLimit = as(leftEval.child(), LimitExec.class);
-        ExchangeExec leftExchange = as(leftLimit.child(), ExchangeExec.class);
-        ProjectExec leftInnerProject = as(leftExchange.child(), ProjectExec.class);
-        FieldExtractExec leftFieldExtract = as(leftInnerProject.child(), FieldExtractExec.class);
-        as(leftFieldExtract.child(), EsQueryExec.class);
+        ExchangeExec leftExchange = as(leftBranch, ExchangeExec.class);
+        ProjectExec leftProject = as(leftExchange.child(), ProjectExec.class);
+        FieldExtractExec leftFieldExtract = as(leftProject.child(), FieldExtractExec.class);
+        EvalExec leftEval = as(leftFieldExtract.child(), EvalExec.class);
+        as(leftEval.child(), EsQueryExec.class);
 
         PhysicalPlan rightBranch = mergeChildren.get(1);
 
         ProjectExec subqueryProject = as(rightBranch, ProjectExec.class);
         EvalExec subqueryEval = as(subqueryProject.child(), EvalExec.class);
-        LimitExec subqueryLimit = as(subqueryEval.child(), LimitExec.class);
-        AggregateExec finalAgg = as(subqueryLimit.child(), AggregateExec.class);
+        AggregateExec finalAgg = as(subqueryEval.child(), AggregateExec.class);
         assertThat(finalAgg.getMode(), is(FINAL));
         var groupings = finalAgg.groupings();
         assertThat(groupings, hasSize(1));
@@ -912,6 +988,13 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
         assertThat(byStat.queryBuilderAndTags(), is(not(empty())));
     }
 
+    /**
+     * Exercises {@link ReplaceRoundToWithQueryAndTags}: verifies the query-and-tags
+     * (filter-by-filter) rewrite of BUCKET in TS mode. This does not test the block
+     * loader push-down path. For block loader push-down of ROUND_TO in TS mode
+     * (via {@link PushExpressionsToFieldLoad}), see
+     * {@link PushExpressionsToFieldLoadTests#testRoundToInTsEval} and friends.
+     */
     public void testRoundToWithTimeSeriesIndices() {
         Map<String, Object> minValue = Map.of(
             "@timestamp",
@@ -954,6 +1037,199 @@ public class SubstituteRoundToTests extends AbstractLocalPhysicalPlanOptimizerTe
             PhysicalPlan plan = plannerOptimizerTimeSeries.plan(q, searchStats, timeSeriesAnalyzer);
             int queryAndTags = plainQueryAndTags(plan);
             assertThat(queryAndTags, equalTo(1));
+        }
+    }
+
+    /**
+     * Exercises the block loader fallback in {@link ReplaceRoundToWithQueryAndTags}:
+     * when query-and-tags is disabled (threshold=0) but block loader is supported,
+     * the RoundTo is replaced with a FunctionEsField-backed FieldAttribute.
+     * When supportsLoaderConfig is false, the RoundTo stays.
+     * <p>
+     * Uses FROM (standard index mode). For block loader push-down with TS source
+     * (via {@link PushExpressionsToFieldLoad}), see
+     * {@link PushExpressionsToFieldLoadTests#testRoundToInTsEval} and friends.
+     */
+    public void testBlockLoaderFallbackForLong() {
+        assumeTrue("ROUND_TO block loader must be enabled", EsqlCapabilities.Cap.ROUND_TO_BLOCK_LOADER.isEnabled());
+        String query = """
+            from test
+            | stats count(*) by x = round_to(long, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+            """;
+        TestPlannerOptimizer allTypesOptimizer = new TestPlannerOptimizer(config, makeAnalyzer("mapping-all-types.json"));
+        EsqlFlags disabledQueryAndTags = new EsqlFlags(0);
+        // with supportsLoaderConfig=false, block loader won't apply, so RoundTo stays
+        {
+            SearchStats noBlockLoaderStats = new EsqlTestUtils.TestSearchStatsWithMinMax(Map.of(), Map.of(), false);
+            PhysicalPlan plan = allTypesOptimizer.plan(query, noBlockLoaderStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            RoundTo roundTo = as(eval.fields().getFirst().child(), RoundTo.class);
+            assertNotNull(roundTo);
+        }
+        // with supportsLoaderConfig=true (default), block loader applies
+        {
+            PhysicalPlan plan = allTypesOptimizer.plan(query, searchStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            FieldAttribute blockLoaderAttr = as(eval.fields().getFirst().child(), FieldAttribute.class);
+            assertThat(blockLoaderAttr.name(), org.hamcrest.Matchers.startsWith("$$long$ROUND_TO$"));
+        }
+    }
+
+    /**
+     * Exercises the block loader fallback in {@link ReplaceRoundToWithQueryAndTags}:
+     * when query-and-tags is disabled (threshold=0) but block loader is supported,
+     * the RoundTo on a date field is replaced with a FunctionEsField-backed FieldAttribute.
+     * Uses FROM (standard index mode).
+     */
+    public void testBlockLoaderFallbackForDate() {
+        assumeTrue("ROUND_TO block loader must be enabled", EsqlCapabilities.Cap.ROUND_TO_BLOCK_LOADER.isEnabled());
+        String query = """
+            from test
+            | stats count(*) by x = round_to(date, "2023-10-20"::date, "2023-10-21"::date, "2023-10-22"::date, "2023-10-23"::date)
+            """;
+        TestPlannerOptimizer allTypesOptimizer = new TestPlannerOptimizer(config, makeAnalyzer("mapping-all-types.json"));
+        EsqlFlags disabledQueryAndTags = new EsqlFlags(0);
+        {
+            SearchStats noBlockLoaderStats = new EsqlTestUtils.TestSearchStatsWithMinMax(Map.of(), Map.of(), false);
+            PhysicalPlan plan = allTypesOptimizer.plan(query, noBlockLoaderStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            RoundTo roundTo = as(eval.fields().getFirst().child(), RoundTo.class);
+            assertNotNull(roundTo);
+        }
+        {
+            PhysicalPlan plan = allTypesOptimizer.plan(query, searchStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            FieldAttribute blockLoaderAttr = as(eval.fields().getFirst().child(), FieldAttribute.class);
+            assertThat(blockLoaderAttr.name(), org.hamcrest.Matchers.startsWith("$$date$ROUND_TO$"));
+        }
+    }
+
+    /**
+     * Exercises the block loader fallback in {@link ReplaceRoundToWithQueryAndTags}:
+     * when query-and-tags is disabled (threshold=0) but block loader is supported,
+     * the RoundTo on a date_nanos field is replaced with a FunctionEsField-backed FieldAttribute.
+     * Uses FROM (standard index mode).
+     */
+    public void testBlockLoaderFallbackForDateNanos() {
+        assumeTrue("ROUND_TO block loader must be enabled", EsqlCapabilities.Cap.ROUND_TO_BLOCK_LOADER.isEnabled());
+        String query = """
+            from test
+            | stats count(*) by x = round_to(\
+            date_nanos, "2023-10-20"::date_nanos, "2023-10-21"::date_nanos, "2023-10-22"::date_nanos, "2023-10-23"::date_nanos)
+            """;
+        TestPlannerOptimizer allTypesOptimizer = new TestPlannerOptimizer(config, makeAnalyzer("mapping-all-types.json"));
+        EsqlFlags disabledQueryAndTags = new EsqlFlags(0);
+        {
+            SearchStats noBlockLoaderStats = new EsqlTestUtils.TestSearchStatsWithMinMax(Map.of(), Map.of(), false);
+            PhysicalPlan plan = allTypesOptimizer.plan(query, noBlockLoaderStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            RoundTo roundTo = as(eval.fields().getFirst().child(), RoundTo.class);
+            assertNotNull(roundTo);
+        }
+        {
+            PhysicalPlan plan = allTypesOptimizer.plan(query, searchStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            FieldAttribute blockLoaderAttr = as(eval.fields().getFirst().child(), FieldAttribute.class);
+            assertThat(blockLoaderAttr.name(), org.hamcrest.Matchers.startsWith("$$date_nanos$ROUND_TO$"));
+        }
+    }
+
+    /**
+     * Block loader does not apply for integer fields (not LONG/DATETIME/DATE_NANOS),
+     * so RoundTo stays when query-and-tags threshold is exceeded.
+     */
+    public void testBlockLoaderNotAppliedForInteger() {
+        StringBuilder points = new StringBuilder();
+        for (int i = 0; i < 128; i++) {
+            if (i > 0) {
+                points.append(", ");
+            }
+            points.append(i);
+        }
+        String query = LoggerMessageFormat.format(null, """
+            from test
+            | stats count(*) by x = round_to(integer, {})
+            """, points.toString());
+
+        ExchangeExec exchange = validatePlanBeforeExchange(query, DataType.INTEGER);
+        AggregateExec agg = as(exchange.child(), AggregateExec.class);
+        EvalExec eval = as(agg.child(), EvalExec.class);
+        assertEquals(1, eval.fields().size());
+        RoundTo roundTo = as(eval.fields().getFirst().child(), RoundTo.class);
+        assertEquals(128, roundTo.points().size());
+    }
+
+    /**
+     * When there is a lookup join, the block loader optimization does not apply
+     * because the RoundTo field reference passes through the LookupJoinExec.
+     * RoundTo stays as-is regardless of block loader support.
+     */
+    public void testBlockLoaderFallbackNotAppliedWithLookupJoin() {
+        assumeTrue("ROUND_TO block loader must be enabled", EsqlCapabilities.Cap.ROUND_TO_BLOCK_LOADER.isEnabled());
+        String query = """
+            from test
+            | rename integer as language_code
+            | lookup join languages_lookup on language_code
+            | stats count(*) by x = round_to(long, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+            """;
+        TestPlannerOptimizer allTypesOptimizer = new TestPlannerOptimizer(config, makeAnalyzer("mapping-all-types.json"));
+        EsqlFlags disabledQueryAndTags = new EsqlFlags(0);
+        {
+            SearchStats noBlockLoaderStats = new EsqlTestUtils.TestSearchStatsWithMinMax(Map.of(), Map.of(), false);
+            PhysicalPlan plan = allTypesOptimizer.plan(query, noBlockLoaderStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            RoundTo roundTo = as(eval.fields().getFirst().child(), RoundTo.class);
+            assertNotNull(roundTo);
+            FieldExtractExec fieldExtract = as(eval.child(), FieldExtractExec.class);
+            as(fieldExtract.child(), LookupJoinExec.class);
+        }
+        {
+            PhysicalPlan plan = allTypesOptimizer.plan(query, searchStats, disabledQueryAndTags);
+            LimitExec limit = as(plan, LimitExec.class);
+            AggregateExec finalAgg = as(limit.child(), AggregateExec.class);
+            ExchangeExec exchange = as(finalAgg.child(), ExchangeExec.class);
+            AggregateExec initAgg = as(exchange.child(), AggregateExec.class);
+            EvalExec eval = as(initAgg.child(), EvalExec.class);
+            assertEquals(1, eval.fields().size());
+            RoundTo roundTo = as(eval.fields().getFirst().child(), RoundTo.class);
+            assertNotNull(roundTo);
+            FieldExtractExec fieldExtract = as(eval.child(), FieldExtractExec.class);
+            as(fieldExtract.child(), LookupJoinExec.class);
         }
     }
 

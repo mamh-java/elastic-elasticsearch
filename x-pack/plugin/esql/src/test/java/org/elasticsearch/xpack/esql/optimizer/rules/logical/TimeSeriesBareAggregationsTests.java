@@ -7,73 +7,25 @@
 
 package org.elasticsearch.xpack.esql.optimizer.rules.logical;
 
-import org.elasticsearch.TransportVersion;
-import org.elasticsearch.index.IndexMode;
-import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
-import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.action.EsqlCapabilities;
-import org.elasticsearch.xpack.esql.analysis.Analyzer;
-import org.elasticsearch.xpack.esql.analysis.AnalyzerContext;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.MetadataAttribute;
-import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
-import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.core.util.Holder;
-import org.elasticsearch.xpack.esql.expression.function.EsqlFunctionRegistry;
-import org.elasticsearch.xpack.esql.index.EsIndex;
-import org.elasticsearch.xpack.esql.index.IndexResolution;
 import org.elasticsearch.xpack.esql.optimizer.AbstractLogicalPlanOptimizerTests;
-import org.elasticsearch.xpack.esql.plan.IndexPattern;
 import org.elasticsearch.xpack.esql.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.esql.plan.logical.TimeSeriesAggregate;
-import org.junit.BeforeClass;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
-import static org.elasticsearch.xpack.esql.EsqlTestUtils.TEST_VERIFIER;
-import static org.elasticsearch.xpack.esql.EsqlTestUtils.emptyInferenceResolution;
-import static org.elasticsearch.xpack.esql.EsqlTestUtils.loadMapping;
-import static org.elasticsearch.xpack.esql.analysis.AnalyzerTestUtils.defaultLookupResolution;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 
 public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimizerTests {
 
-    private static Map<String, EsField> mappingK8s;
-    private static Analyzer k8sAnalyzer;
-
-    @BeforeClass
-    public static void initK8s() {
-        mappingK8s = loadMapping("k8s-mappings.json");
-        EsIndex k8sIndex = new EsIndex("k8s", mappingK8s, Map.of("k8s", IndexMode.TIME_SERIES), Map.of(), Map.of(), Set.of());
-
-        IndexResolution indexResolution = IndexResolution.valid(k8sIndex);
-
-        Map<IndexPattern, IndexResolution> resolutions = new HashMap<>();
-        resolutions.put(new IndexPattern(Source.EMPTY, indexResolution.get().name()), indexResolution);
-
-        k8sAnalyzer = new Analyzer(
-            new AnalyzerContext(
-                EsqlTestUtils.TEST_CFG,
-                new EsqlFunctionRegistry(),
-                resolutions,
-                defaultLookupResolution(),
-                enrichResolution,
-                emptyInferenceResolution(),
-                TransportVersion.minimumCompatible()
-            ),
-            TEST_VERIFIER
-        );
-    }
-
     protected LogicalPlan planK8s(String query) {
-        LogicalPlan analyzed = k8sAnalyzer.analyze(parser.createStatement(query));
-        return logicalOptimizer.optimize(analyzed);
+        return logicalOptimizer.optimize(analyzerWithEnrichPolicies().addK8s().query(query));
     }
 
     /**
@@ -100,13 +52,10 @@ public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimize
         assertThat("Should have aggregates", aggregates.isEmpty(), is(false));
 
         List<Attribute> output = plan.output();
-        boolean hasTimeseries = output.stream().anyMatch(attr -> attr.name().equals(MetadataAttribute.TIMESERIES));
+        boolean hasTimeseries = output.stream().anyMatch(MetadataAttribute::isTimeSeriesAttribute);
         assertThat("Should have _timeseries in output", hasTimeseries, is(true));
 
-        Attribute timeseriesAttr = output.stream()
-            .filter(attr -> attr.name().equals(MetadataAttribute.TIMESERIES))
-            .findFirst()
-            .orElse(null);
+        Attribute timeseriesAttr = output.stream().filter(MetadataAttribute::isTimeSeriesAttribute).findFirst().orElse(null);
 
         assertNotNull(timeseriesAttr);
         assertThat("_timeseries attribute should exist", timeseriesAttr, is(instanceOf(Attribute.class)));
@@ -134,13 +83,10 @@ public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimize
         assertThat("Should have aggregates", aggregates.isEmpty(), is(false));
 
         List<Attribute> output = plan.output();
-        boolean hasTimeseries = output.stream().anyMatch(attr -> attr.name().equals(MetadataAttribute.TIMESERIES));
+        boolean hasTimeseries = output.stream().anyMatch(MetadataAttribute::isTimeSeriesAttribute);
         assertThat("Should have _timeseries in output", hasTimeseries, is(true));
 
-        Attribute timeseriesAttr = output.stream()
-            .filter(attr -> attr.name().equals(MetadataAttribute.TIMESERIES))
-            .findFirst()
-            .orElse(null);
+        Attribute timeseriesAttr = output.stream().filter(MetadataAttribute::isTimeSeriesAttribute).findFirst().orElse(null);
 
         assertNotNull(timeseriesAttr);
         assertThat("_timeseries attribute should exist", timeseriesAttr, is(instanceOf(Attribute.class)));
@@ -171,13 +117,10 @@ public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimize
         assertThat("Should group by bucket", hasBucket, is(true));
 
         List<Attribute> output = plan.output();
-        boolean hasTimeseries = output.stream().anyMatch(attr -> attr.name().equals(MetadataAttribute.TIMESERIES));
+        boolean hasTimeseries = output.stream().anyMatch(MetadataAttribute::isTimeSeriesAttribute);
         assertThat("Should have _timeseries in output", hasTimeseries, is(true));
 
-        Attribute timeseriesAttr = output.stream()
-            .filter(attr -> attr.name().equals(MetadataAttribute.TIMESERIES))
-            .findFirst()
-            .orElse(null);
+        Attribute timeseriesAttr = output.stream().filter(MetadataAttribute::isTimeSeriesAttribute).findFirst().orElse(null);
 
         assertNotNull(timeseriesAttr);
         assertThat("_timeseries attribute should exist", timeseriesAttr, is(instanceOf(Attribute.class)));
@@ -208,13 +151,10 @@ public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimize
         assertThat("Should group by bucket", hasBucket, is(true));
 
         List<Attribute> output = plan.output();
-        boolean hasTimeseries = output.stream().anyMatch(attr -> attr.name().equals(MetadataAttribute.TIMESERIES));
+        boolean hasTimeseries = output.stream().anyMatch(MetadataAttribute::isTimeSeriesAttribute);
         assertThat("Should have _timeseries in output", hasTimeseries, is(true));
 
-        Attribute timeseriesAttr = output.stream()
-            .filter(attr -> attr.name().equals(MetadataAttribute.TIMESERIES))
-            .findFirst()
-            .orElse(null);
+        Attribute timeseriesAttr = output.stream().filter(MetadataAttribute::isTimeSeriesAttribute).findFirst().orElse(null);
 
         assertNotNull(timeseriesAttr);
         assertThat("_timeseries attribute should exist", timeseriesAttr, is(instanceOf(Attribute.class)));
@@ -248,13 +188,10 @@ public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimize
         assertThat("Should still group by _tsid", hasTsid, is(true));
 
         List<Attribute> output = plan.output();
-        boolean hasTimeseries = output.stream().anyMatch(attr -> attr.name().equals(MetadataAttribute.TIMESERIES));
+        boolean hasTimeseries = output.stream().anyMatch(MetadataAttribute::isTimeSeriesAttribute);
         assertThat("Should have _timeseries in output", hasTimeseries, is(true));
 
-        Attribute timeseriesAttr = output.stream()
-            .filter(attr -> attr.name().equals(MetadataAttribute.TIMESERIES))
-            .findFirst()
-            .orElse(null);
+        Attribute timeseriesAttr = output.stream().filter(MetadataAttribute::isTimeSeriesAttribute).findFirst().orElse(null);
 
         assertNotNull(timeseriesAttr);
         assertThat("_timeseries attribute should exist", timeseriesAttr, is(instanceOf(Attribute.class)));
@@ -264,10 +201,10 @@ public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimize
     public void testMixedBareOverTimeAndRegularAggregates() {
         assumeTrue("requires metrics command", EsqlCapabilities.Cap.METRICS_GROUP_BY_ALL.isEnabled());
 
-        var error = expectThrows(EsqlIllegalArgumentException.class, () -> { planK8s("""
+        var error = expectThrows(IllegalArgumentException.class, () -> planK8s("""
             TS k8s
             | STATS avg_over_time(network.cost), sum(network.total_bytes_in)
-            """); });
+            """));
 
         assertThat(error.getMessage(), equalTo("""
             Cannot mix time-series aggregate [avg_over_time(network.cost)] and \
@@ -277,12 +214,59 @@ public class TimeSeriesBareAggregationsTests extends AbstractLogicalPlanOptimize
     public void testGroupingKeyInAggregatesListPreserved() {
         assumeTrue("requires metrics command", EsqlCapabilities.Cap.METRICS_GROUP_BY_ALL.isEnabled());
 
-        var error = expectThrows(EsqlIllegalArgumentException.class, () -> { planK8s("""
+        var error = expectThrows(IllegalArgumentException.class, () -> planK8s("""
             TS k8s
             | STATS rate(network.total_bytes_out) BY region, TBUCKET(1hour)
-            """); });
+            """));
 
-        assertThat(error.getMessage(), equalTo("Cannot mix time-series aggregate and grouping attributes. Found [region]."));
+        assertThat(
+            error.getMessage(),
+            equalTo(
+                "Only grouping functions are supported (e.g. tbucket) when the time series aggregation function "
+                    + "[rate(network.total_bytes_out)] is not wrapped with another aggregation function. Found [region]."
+            )
+        );
+    }
+
+    public void testBucketWithRenamedTimestampThrowsError() {
+        assumeTrue("requires metrics command", EsqlCapabilities.Cap.METRICS_GROUP_BY_ALL.isEnabled());
+
+        var error = expectThrows(IllegalArgumentException.class, () -> planK8s("""
+            TS k8s
+            | EVAL renamed_ts = @timestamp
+            | STATS min = min(last_over_time(network.total_bytes_out)) BY bucket = bucket(renamed_ts, 1hour)
+            """));
+
+        assertThat(
+            error.getMessage(),
+            equalTo(
+                "Time-series aggregations require direct use of @timestamp which was not found. "
+                    + "If @timestamp was renamed in EVAL, use the original @timestamp field instead."
+            )
+        );
+    }
+
+    public void testAliasedGroupingInTsStatsKeepsAliasName() {
+        assumeTrue("requires metrics command", EsqlCapabilities.Cap.METRICS_GROUP_BY_ALL.isEnabled());
+
+        LogicalPlan plan = planK8s("""
+            TS k8s
+            | STATS max_bytes = max(to_long(network.total_bytes_in)) BY foobar = cluster
+            """);
+
+        assertThat(plan.output().stream().map(Attribute::name).toList(), equalTo(List.of("max_bytes", "foobar")));
+    }
+
+    public void testAliasedGroupingInTsStatsCanBeUsedInKeep() {
+        assumeTrue("requires metrics command", EsqlCapabilities.Cap.METRICS_GROUP_BY_ALL.isEnabled());
+
+        LogicalPlan plan = planK8s("""
+            TS k8s
+            | STATS max_bytes = max(to_long(network.total_bytes_in)) BY foobar = cluster
+            | KEEP max_bytes, foobar
+            """);
+
+        assertThat(plan.output().stream().map(Attribute::name).toList(), equalTo(List.of("max_bytes", "foobar")));
     }
 
     private TimeSeriesAggregate findTimeSeriesAggregate(LogicalPlan plan) {

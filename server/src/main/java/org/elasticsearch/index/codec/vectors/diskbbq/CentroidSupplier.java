@@ -9,32 +9,33 @@
 
 package org.elasticsearch.index.codec.vectors.diskbbq;
 
+import org.elasticsearch.index.codec.vectors.cluster.KMeansFloatVectorValues;
+
 import java.io.IOException;
+import java.util.Arrays;
 
 /**
  * An interface for that supply centroids.
  */
 public interface CentroidSupplier {
-    CentroidSupplier EMPTY = new CentroidSupplier() {
-        @Override
-        public int size() {
-            return 0;
-        }
-
-        @Override
-        public float[] centroid(int centroidOrdinal) {
-            throw new IllegalStateException("No centroids");
-        }
-    };
 
     int size();
 
     float[] centroid(int centroidOrdinal) throws IOException;
 
-    static CentroidSupplier fromArray(float[][] centroids) {
-        if (centroids.length == 0) {
-            return EMPTY;
-        }
+    CentroidIndex centroidIndex();
+
+    default CentroidSlices slices() throws IOException {
+        return null;
+    }
+
+    KMeansFloatVectorValues asKmeansFloatVectorValues() throws IOException;
+
+    static CentroidSupplier empty(int dims) {
+        return fromArray(new float[0][dims], CentroidIndex.NO_INDEX, dims);
+    }
+
+    static CentroidSupplier fromArray(float[][] centroids, CentroidIndex centroidIndex, int dims) {
         return new CentroidSupplier() {
             @Override
             public int size() {
@@ -45,6 +46,17 @@ public interface CentroidSupplier {
             public float[] centroid(int centroidOrdinal) {
                 return centroids[centroidOrdinal];
             }
+
+            @Override
+            public CentroidIndex centroidIndex() {
+                return centroidIndex;
+            }
+
+            @Override
+            public KMeansFloatVectorValues asKmeansFloatVectorValues() {
+                return KMeansFloatVectorValues.build(Arrays.asList(centroids), null, dims);
+            }
         };
     }
+
 }
