@@ -1,0 +1,5 @@
+pr: 153423
+summary: Apply sequential read advice during merge for `bbq_disk` vectors
+area: Vector Search
+type: bug
+issues: []
