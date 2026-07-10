@@ -47,12 +47,8 @@ public class DelegatingRestChannel implements RestChannel {
     }
 
     @Override
-    public XContentBuilder newBuilder(
-        XContentType xContentType,
-        XContentType responseContentType,
-        boolean useFiltering,
-        OutputStream out
-    ) throws IOException {
+    public XContentBuilder newBuilder(XContentType xContentType, XContentType responseContentType, boolean useFiltering, OutputStream out)
+        throws IOException {
         return delegate.newBuilder(xContentType, responseContentType, useFiltering, out);
     }
 
