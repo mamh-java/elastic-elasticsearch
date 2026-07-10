@@ -39,6 +39,9 @@ public final class SecureReleasableRestChannel extends DelegatingRestChannel {
 
     @Nullable
     static Releasable collectSecureReleasableTransients(ThreadContext threadContext) {
+        if (threadContext.getTransientHeaders().isEmpty()) {
+            return null;
+        }
         List<Releasable> collected = new ArrayList<>();
         for (Object value : threadContext.getTransientHeaders().values()) {
             collectSecureReleasables(value, collected);
