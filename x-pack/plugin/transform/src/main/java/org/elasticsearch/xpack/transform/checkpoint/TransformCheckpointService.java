@@ -125,7 +125,7 @@ public class TransformCheckpointService {
                             nextCheckpointPosition,
                             nextCheckpointProgress,
                             timeout,
-                            l
+                            ActionListener.releaseAfter(l, persisted)
                         );
                     })
                 );
