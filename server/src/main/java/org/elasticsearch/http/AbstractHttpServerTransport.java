@@ -37,9 +37,9 @@ import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.common.xcontent.LoggingDeprecationHandler;
 import org.elasticsearch.core.AbstractRefCounted;
 import org.elasticsearch.core.RefCounted;
-import org.elasticsearch.rest.ResourceReleasingRestChannel;
 import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestRequest;
+import org.elasticsearch.rest.SecureReleasableRestChannel;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.telemetry.TelemetryProvider;
 import org.elasticsearch.telemetry.metric.LongWithAttributes;
@@ -535,7 +535,7 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
                     }
                     return;
                 }
-                dispatcher.dispatchRequest(restRequest, new ResourceReleasingRestChannel(channel, threadContext), threadContext);
+                dispatcher.dispatchRequest(restRequest, new SecureReleasableRestChannel(channel, threadContext), threadContext);
             }
         }
     }
