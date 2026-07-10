@@ -235,8 +235,15 @@ public final class RestResponse implements Releasable {
         customHeaders.computeIfAbsent(name, k -> new ArrayList<>()).add(value);
     }
 
+    /**
+     * Attaches additional resource to be released when this response is closed.
+     */
     public void addReleasable(Releasable toRelease) {
-        this.releasable = this.releasable == null ? toRelease : Releasables.wrap(this.releasable, toRelease);
+        if (this.releasable == null) {
+            this.releasable = toRelease;
+        } else {
+            this.releasable = Releasables.wrap(this.releasable, toRelease);
+        }
     }
 
     /**
