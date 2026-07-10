@@ -960,17 +960,11 @@ public class StatelessIT extends AbstractStatelessPluginIntegTestCase {
         var forceMergeThread = new Thread(() -> {
             try {
                 indexShard.forceMerge(new ForceMergeRequest().maxNumSegments(1));
-            } catch (UnavailableShardsException | AlreadyClosedException e) {
+            } catch (UnavailableShardsException | AlreadyClosedException | MergePolicy.MergeAbortedException e) {
                 // Force merge checks if the engine is still open at the end, and sometimes it might
                 // throw an AlreadyClosedException even after the commit is already processed by ShardCommitState
             } catch (IOException e) {
-                // When the shard closes during relocation, the in-flight background merge is aborted.
-                // Lucene wraps the MergeAbortedException in an IOException ("background merge hit exception").
-                if (ExceptionsHelper.unwrapCausesAndSuppressed(
-                    e,
-                    t -> t instanceof MergePolicy.MergeAbortedException
-                        || (t.getMessage() != null && t.getMessage().contains("merge is aborted"))
-                ).isEmpty()) {
+                if (e.getCause() instanceof MergePolicy.MergeAbortedException == false) {
                     fail(e);
                 }
             }
