@@ -21,6 +21,7 @@ import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.CollectionUtils;
 import org.elasticsearch.common.xcontent.XContentHelper;
@@ -1628,6 +1629,18 @@ public class DatafeedConfigTests extends AbstractBWCSerializationTestCase<Datafe
             assertThat(deserialized.getCloudInternalCredential(), equalTo(cred));
             assertEquals(config, deserialized);
         }
+    }
+
+    public void testCloseReleasesCloudInternalCredentialAndIsIdempotent() {
+        PersistedCloudCredential cred = PersistedCloudCredential.plaintext("key-id", new SecureString("secret".toCharArray()));
+        DatafeedConfig.Builder builder = new DatafeedConfig.Builder("test-datafeed", "test-job");
+        builder.setIndices(List.of("logs-*"));
+        builder.setCloudInternalCredential(cred);
+        DatafeedConfig config = builder.build();
+
+        config.close();
+        expectThrows(IllegalStateException.class, "SecureString has already been closed", () -> cred.internalApiKey().length());
+        config.close();
     }
 
     private DatafeedConfig createDatafeedConfigFromString(String json) throws IOException {

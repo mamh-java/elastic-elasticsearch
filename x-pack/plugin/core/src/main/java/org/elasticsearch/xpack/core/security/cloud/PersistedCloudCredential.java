@@ -31,20 +31,17 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
 /**
- * Persistence envelope for a cloud-managed credential, pairing the public API key {@code id} with the internal API key material.
+ * Persistence envelope for a cloud-managed credential, pairing the public API key {@code id} with the internal cloud API key credentials.
  *
  * <p>Two at-rest forms are supported, discriminated by {@code version}:
  * <ul>
- *   <li><b>v1 (plaintext)</b> — the internal API key is stored as-is in the {@code value} field. This is the legacy format and the
+ *   <li><b>v1 (plaintext)</b> - the internal API key is stored as-is in the {@code value} field. This is the legacy format and the
  *       explicit opt-out format written only when cluster-state encryption is unavailable and {@code cluster.state.encryption.required}
  *       is {@code false}.</li>
- *   <li><b>v2 (encrypted)</b> — the internal API key is stored as AES-256-GCM ciphertext in {@code encrypted}
+ *   <li><b>v2 (encrypted)</b> - the internal API key is stored as AES-256-GCM ciphertext in {@code encrypted}
  *       ({@link CloudCredentialEncryptedData}) under the per-project cloud credential encryption key. This is the default.</li>
  * </ul>
  *
- * <p>Both forms remain readable so that dev-cluster upgrades and the plaintext opt-out are non-breaking. New credentials are written
- * encrypted (v2) whenever the encryption key is available; see the serverless grant path. The version-to-payload mapping and all
- * version/field references live in {@link Format}, so adding a form is a single enum constant plus its compiler-checked switch branches.
  */
 public final class PersistedCloudCredential implements Writeable, ToXContentObject, Releasable {
 
@@ -58,8 +55,7 @@ public final class PersistedCloudCredential implements Writeable, ToXContentObje
     public static final int CURRENT_VERSION = ENCRYPTED_VERSION;
 
     /**
-     * Guards the v2 wire format. Peers that do not yet support this version cannot receive a v2 credential on the wire; publishing to
-     * such peers throws {@link IllegalStateException}. The v1 (plaintext) form serializes to any peer.
+     * Guards the encrypted (v2) wire format.
      */
     public static final TransportVersion CLOUD_CREDENTIAL_ENCRYPTION = TransportVersion.fromName("cloud_credential_encryption");
 
@@ -71,7 +67,9 @@ public final class PersistedCloudCredential implements Writeable, ToXContentObje
      * payload field, so parsing, validation, and error messages carry no per-version literals.
      */
     private enum Format {
+
         PLAINTEXT(PLAINTEXT_VERSION, new ParseField("value")),
+
         ENCRYPTED(ENCRYPTED_VERSION, new ParseField("encrypted"));
 
         private final int version;
@@ -82,8 +80,6 @@ public final class PersistedCloudCredential implements Writeable, ToXContentObje
             this.field = field;
         }
 
-        // Fixed set of supported versions for the unsupported-version error message; computed lazily on first use and cached (so no
-        // work at class-load time). List#toString yields "[1, 2]".
         private static final Supplier<String> SUPPORTED_VERSIONS = CachedSupplier.wrap(
             () -> Arrays.stream(values()).map(f -> f.version).toList().toString()
         );
