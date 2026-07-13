@@ -11,10 +11,10 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.AttributeSet;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
-import java.util.ArrayList;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 

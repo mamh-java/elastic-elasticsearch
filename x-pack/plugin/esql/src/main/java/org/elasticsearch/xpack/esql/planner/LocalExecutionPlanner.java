@@ -2039,10 +2039,7 @@ public class LocalExecutionPlanner {
         PhysicalOperation source = plan(mapExpand.child(), context);
 
         // Input channels the operator reads for each combinator leaf, in leaf order.
-        int[] leafChannels = mapExpand.leafSourceAttributes()
-            .stream()
-            .mapToInt(attr -> source.layout.get(attr.id()).channel())
-            .toArray();
+        int[] leafChannels = mapExpand.leafSourceAttributes().stream().mapToInt(attr -> source.layout.get(attr.id()).channel()).toArray();
         String[] leafNames = mapExpand.leafNames().toArray(new String[0]);
 
         // Build the expanded layout: existing source channels, then _map_col_* leaf channels,
@@ -2091,14 +2088,8 @@ public class LocalExecutionPlanner {
         int mapPosChannel = source.layout.get(expandExec.mapPosAttr().id()).channel();
         int mapPageIdChannel = source.layout.get(expandExec.mapPageIdAttr().id()).channel();
         int returningChannel = source.layout.get(mapContract.returningAttr().id()).channel();
-        int[] mapColChannels = expandExec.mapColAttributes()
-            .stream()
-            .mapToInt(attr -> source.layout.get(attr.id()).channel())
-            .toArray();
-        int[] sourceChannels = mapContract.sourceAttributes()
-            .stream()
-            .mapToInt(attr -> source.layout.get(attr.id()).channel())
-            .toArray();
+        int[] mapColChannels = expandExec.mapColAttributes().stream().mapToInt(attr -> source.layout.get(attr.id()).channel()).toArray();
+        int[] sourceChannels = mapContract.sourceAttributes().stream().mapToInt(attr -> source.layout.get(attr.id()).channel()).toArray();
 
         // Contracted layout: source columns followed by RETURNING.
         Layout.Builder layout = new Layout.Builder();
