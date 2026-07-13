@@ -144,7 +144,7 @@ class NodeServiceProvider {
         LinkedProjectConfigService linkedProjectConfigService,
         CrossProjectModeDecider crossProjectModeDecider,
         ProjectResolver projectResolver,
-        List<TransportMessageListener> delegatedMessageListeners
+        List<? extends TransportMessageListener.Provider> transportMessageListenerProviders
     ) {
         return new TransportService(
             settings,
@@ -159,7 +159,7 @@ class NodeServiceProvider {
             telemetryProvider,
             crossProjectModeDecider,
             projectResolver,
-            delegatedMessageListeners
+            transportMessageListenerProviders
         );
     }
 

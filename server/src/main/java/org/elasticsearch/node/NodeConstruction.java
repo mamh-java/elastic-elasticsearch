@@ -1204,9 +1204,9 @@ class NodeConstruction {
             clusterService.addListener(new SystemIndexSettingsUpdateService(metadataUpdateSettingsService, systemIndices, settings));
         }
         final Transport transport = networkModule.getTransportSupplier().get();
-        List<TransportMessageListener> transportMessageListeners = pluginsService.loadServiceProviders(
+        List<? extends TransportMessageListener.Provider> transportMessageListenerProviders = pluginsService.loadServiceProviders(
             TransportMessageListener.Provider.class
-        ).stream().flatMap(provider -> provider.create().stream()).toList();
+        );
         final TransportService transportService = serviceProvider.newTransportService(
             pluginsService,
             settings,
@@ -1221,7 +1221,7 @@ class NodeConstruction {
             linkedProjectConfigService,
             crossProjectModeDecider,
             projectResolver,
-            transportMessageListeners
+            transportMessageListenerProviders
         );
         transportServiceRef.set(transportService);
         final SearchResponseMetrics searchResponseMetrics = new SearchResponseMetrics(telemetryProvider.getMeterRegistry());

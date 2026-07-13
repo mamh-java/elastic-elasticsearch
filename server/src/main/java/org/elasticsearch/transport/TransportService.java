@@ -119,7 +119,7 @@ public class TransportService extends AbstractLifecycleComponent
     private final boolean remoteClusterClient;
     private final Transport.ResponseHandlers responseHandlers;
     private final TransportInterceptor interceptor;
-    private final List<TransportMessageListener> delegatedMessageListeners;
+    private final TransportMessageListener[] delegatedMessageListeners;
 
     private final PendingDirectHandlers pendingDirectHandlers = new PendingDirectHandlers();
 
@@ -289,6 +289,14 @@ public class TransportService extends AbstractLifecycleComponent
         );
     }
 
+    private static TransportMessageListener[] createDelegatedMessageListeners(
+        List<? extends TransportMessageListener.Provider> transportMessageListenerProviders
+    ) {
+        return transportMessageListenerProviders.stream()
+            .flatMap(provider -> provider.create().stream())
+            .toArray(TransportMessageListener[]::new);
+    }
+
     @SuppressWarnings("this-escape")
     public TransportService(
         Settings settings,
@@ -303,7 +311,7 @@ public class TransportService extends AbstractLifecycleComponent
         TelemetryProvider telemetryProvider,
         CrossProjectModeDecider crossProjectModeDecider,
         ProjectResolver projectResolver,
-        List<TransportMessageListener> delegatedMessageListeners
+        List<? extends TransportMessageListener.Provider> transportMessageListenerProviders
     ) {
         this.transport = transport;
         transport.setSlowLogThreshold(TransportSettings.SLOW_OPERATION_THRESHOLD_SETTING.get(settings));
@@ -315,7 +323,7 @@ public class TransportService extends AbstractLifecycleComponent
         setTracerLogExclude(TransportSettings.TRACE_LOG_EXCLUDE_SETTING.get(settings));
         this.taskManager = taskManger;
         this.interceptor = transportInterceptor;
-        this.delegatedMessageListeners = delegatedMessageListeners;
+        this.delegatedMessageListeners = createDelegatedMessageListeners(transportMessageListenerProviders);
         this.asyncSender = interceptor.interceptSender(this::sendRequestInternal);
         this.remoteClusterClient = DiscoveryNode.isRemoteClusterClient(settings);
         this.enableStackOverflowAvoidance = ENABLE_STACK_OVERFLOW_AVOIDANCE.get(settings);

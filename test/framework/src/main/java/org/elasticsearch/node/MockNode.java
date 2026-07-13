@@ -201,7 +201,7 @@ public class MockNode extends Node {
             LinkedProjectConfigService linkedProjectConfigService,
             CrossProjectModeDecider crossProjectModeDecider,
             ProjectResolver projectResolver,
-            List<TransportMessageListener> delegatedMessageListeners
+            List<? extends TransportMessageListener.Provider> transportMessageListenerProviders
         ) {
 
             // we use the MockTransportService.TestPlugin class as a marker to create a network
@@ -223,7 +223,7 @@ public class MockNode extends Node {
                     linkedProjectConfigService,
                     crossProjectModeDecider,
                     projectResolver,
-                    delegatedMessageListeners
+                    transportMessageListenerProviders
                 );
             } else {
                 return new MockTransportService(
