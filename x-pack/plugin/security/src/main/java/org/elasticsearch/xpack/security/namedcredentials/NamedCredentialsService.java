@@ -11,6 +11,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.ElasticsearchStatusException;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.DocWriteRequest;
 import org.elasticsearch.action.DocWriteResponse;
 import org.elasticsearch.action.delete.DeleteRequest;
 import org.elasticsearch.action.delete.DeleteResponse;
@@ -31,6 +32,10 @@ import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.xcontent.ToXContent;
+import org.elasticsearch.xcontent.XContentFactory;
+import org.elasticsearch.xcontent.XContentParserConfiguration;
+import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.CredentialAuthType;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.NamedCredential;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.PutNamedCredentialAction;
@@ -80,6 +85,11 @@ public class NamedCredentialsService {
     }
 
     /**
+     * Holds the raw document source together with sequence number metadata for optimistic concurrency.
+     */
+    private record RawGetResult(Map<String, Object> source, long seqNo, long primaryTerm) {}
+
+    /**
      * Creates or replaces a named credential. Responds {@code true} if created, {@code false} if replaced.
      */
     public void putCredential(PutNamedCredentialAction.Request request, ActionListener<Boolean> listener) {
@@ -87,8 +97,9 @@ public class NamedCredentialsService {
         if (encryption == null) {
             return;
         }
-        getRawSource(request.credentialName(), ActionListener.<Map<String, Object>>wrap(existingSource -> {
-            final boolean creating = existingSource == null;
+        getRawGetResult(request.credentialName(), ActionListener.<RawGetResult>wrap(existing -> {
+            final boolean creating = existing == null;
+            final Map<String, Object> existingSource = creating ? null : existing.source();
             final String authBlob;
             if (request.auth() != null) {
                 authBlob = encryptAuth(encryption, request.auth());
@@ -114,6 +125,7 @@ public class NamedCredentialsService {
                 return;
             } else {
                 // Carry-forward: request omitted auth, keep the stored encrypted blob as-is.
+                logger.debug("carrying forward existing auth blob for named credential [{}]", request.credentialName());
                 authBlob = (String) existingSource.get("auth");
             }
             final long now = clock.millis();
@@ -124,6 +136,11 @@ public class NamedCredentialsService {
                 .setSource(source)
                 .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
                 .request();
+            if (creating) {
+                indexRequest.opType(DocWriteRequest.OpType.CREATE);
+            } else {
+                indexRequest.setIfSeqNo(existing.seqNo()).setIfPrimaryTerm(existing.primaryTerm());
+            }
             indexManager.forCurrentProject()
                 .prepareIndexIfNeededThenExecute(
                     listener::onFailure,
@@ -258,6 +275,38 @@ public class NamedCredentialsService {
     }
 
     /**
+     * Fetches the raw document source together with its sequence number metadata for optimistic concurrency,
+     * or {@code null} if the document (or the index) does not exist.
+     */
+    private void getRawGetResult(String name, ActionListener<RawGetResult> listener) {
+        final SecurityIndexManager.IndexState indexState = indexManager.forCurrentProject();
+        if (indexState.indexExists() == false) {
+            listener.onResponse(null);
+            return;
+        }
+        if (indexState.isAvailable(SecurityIndexManager.Availability.PRIMARY_SHARDS) == false) {
+            listener.onFailure(indexState.getUnavailableReason(SecurityIndexManager.Availability.PRIMARY_SHARDS));
+            return;
+        }
+        final GetRequest getRequest = client.prepareGet(indexManager.aliasName(), name).request();
+        indexState.checkIndexVersionThenExecute(
+            listener::onFailure,
+            () -> executeAsyncWithOrigin(
+                client.threadPool().getThreadContext(),
+                SECURITY_ORIGIN,
+                getRequest,
+                ActionListener.<GetResponse>wrap(
+                    response -> listener.onResponse(
+                        response.isExists() ? new RawGetResult(response.getSource(), response.getSeqNo(), response.getPrimaryTerm()) : null
+                    ),
+                    listener::onFailure
+                ),
+                client::get
+            )
+        );
+    }
+
+    /**
      * Fetches the raw document source, or {@code null} if the document (or the index) does not exist.
      */
     private void getRawSource(String name, ActionListener<Map<String, Object>> listener) {
@@ -347,9 +396,9 @@ public class NamedCredentialsService {
         final byte[] plaintext = serializeAuth(auth);
         try {
             final EncryptedData encrypted = encryption.encrypt(plaintext);
-            try (BytesStreamOutput out = new BytesStreamOutput()) {
-                encrypted.writeTo(out);
-                return Base64.getEncoder().encodeToString(BytesReference.toBytes(out.bytes()));
+            try (var builder = XContentFactory.jsonBuilder()) {
+                encrypted.toXContent(builder, ToXContent.EMPTY_PARAMS);
+                return Base64.getEncoder().encodeToString(BytesReference.toBytes(BytesReference.bytes(builder)));
             } catch (IOException e) {
                 throw new ElasticsearchStatusException("failed to serialize encrypted auth block", RestStatus.INTERNAL_SERVER_ERROR, e);
             }
@@ -361,8 +410,11 @@ public class NamedCredentialsService {
     static Map<String, String> decryptAuth(EncryptionService encryption, String base64Blob) {
         final byte[] blobBytes = Base64.getDecoder().decode(base64Blob);
         final EncryptedData encrypted;
-        try (StreamInput in = new BytesArray(blobBytes).streamInput()) {
-            encrypted = new EncryptedData(in);
+        try (
+            var parser = XContentType.JSON.xContent()
+                .createParser(XContentParserConfiguration.EMPTY, new BytesArray(blobBytes).streamInput())
+        ) {
+            encrypted = EncryptedData.fromXContent(parser);
         } catch (IOException e) {
             throw new ElasticsearchStatusException("stored auth block is malformed", RestStatus.INTERNAL_SERVER_ERROR, e);
         }
