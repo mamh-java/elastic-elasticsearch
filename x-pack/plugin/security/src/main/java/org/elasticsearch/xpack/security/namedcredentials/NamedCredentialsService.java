@@ -143,7 +143,7 @@ public class NamedCredentialsService {
 
     /**
      * Returns credentials (with auth redacted). If {@code name} is non-null, returns a single-element list or
-     * fails with {@link org.elasticsearch.index.engine.DocumentMissingException} if not found.
+     * fails with {@link org.elasticsearch.ResourceNotFoundException} if not found.
      * If {@code name} is null and the index does not exist, returns an empty list.
      */
     public void getCredentials(@Nullable String name, ActionListener<List<NamedCredential>> listener) {
@@ -234,7 +234,15 @@ public class NamedCredentialsService {
                 return;
             }
             final NamedCredential redacted = credentialFromSource(name, source);
-            final Map<String, String> auth = decryptAuth(encryption, (String) source.get("auth"));
+            final String authBlob = (String) source.get("auth");
+            if (authBlob == null) {
+                throw new ElasticsearchStatusException(
+                    "named credential [{}] has no stored auth block",
+                    RestStatus.INTERNAL_SERVER_ERROR,
+                    name
+                );
+            }
+            final Map<String, String> auth = decryptAuth(encryption, authBlob);
             listener.onResponse(
                 new NamedCredential(
                     redacted.name(),
