@@ -385,6 +385,10 @@ import org.elasticsearch.xpack.security.rest.action.apikey.RestUpdateApiKeyActio
 import org.elasticsearch.xpack.security.rest.action.apikey.RestUpdateCrossClusterApiKeyAction;
 import org.elasticsearch.xpack.security.rest.action.enrollment.RestKibanaEnrollAction;
 import org.elasticsearch.xpack.security.rest.action.enrollment.RestNodeEnrollmentAction;
+import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestDecryptNamedCredentialAction;
+import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestDeleteNamedCredentialAction;
+import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestGetNamedCredentialsAction;
+import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestPutNamedCredentialAction;
 import org.elasticsearch.xpack.security.rest.action.oauth2.RestGetTokenAction;
 import org.elasticsearch.xpack.security.rest.action.oauth2.RestInvalidateTokenAction;
 import org.elasticsearch.xpack.security.rest.action.oidc.RestOpenIdConnectAuthenticateAction;
@@ -1967,7 +1971,11 @@ public class Security extends Plugin
             new RestDisableProfileAction(settings, getLicenseState()),
             new RestGetSecuritySettingsAction(settings, getLicenseState()),
             new RestUpdateSecuritySettingsAction(settings, getLicenseState()),
-            new RestSecurityStatsAction(settings, getLicenseState(), clusterSupportsFeature)
+            new RestSecurityStatsAction(settings, getLicenseState(), clusterSupportsFeature),
+            new RestPutNamedCredentialAction(settings, getLicenseState()),
+            new RestGetNamedCredentialsAction(settings, getLicenseState()),
+            new RestDeleteNamedCredentialAction(settings, getLicenseState()),
+            new RestDecryptNamedCredentialAction(settings, getLicenseState())
         ).filter(Objects::nonNull).toList();
     }
 
