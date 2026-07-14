@@ -831,6 +831,7 @@ public class Security extends Plugin
         Collections.addAll(
             checks,
             new TokenSSLBootstrapCheck(),
+            new NamedCredentialsSSLBootstrapCheck(),
             new PkiRealmBootstrapCheck(getSslService()),
             new TransportTLSBootstrapCheck()
         );
