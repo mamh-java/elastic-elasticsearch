@@ -148,6 +148,10 @@ import org.elasticsearch.xpack.core.security.action.apikey.UpdateApiKeyRequestTr
 import org.elasticsearch.xpack.core.security.action.apikey.UpdateCrossClusterApiKeyAction;
 import org.elasticsearch.xpack.core.security.action.enrollment.KibanaEnrollmentAction;
 import org.elasticsearch.xpack.core.security.action.enrollment.NodeEnrollmentAction;
+import org.elasticsearch.xpack.core.security.action.namedcredentials.DecryptNamedCredentialAction;
+import org.elasticsearch.xpack.core.security.action.namedcredentials.DeleteNamedCredentialAction;
+import org.elasticsearch.xpack.core.security.action.namedcredentials.GetNamedCredentialsAction;
+import org.elasticsearch.xpack.core.security.action.namedcredentials.PutNamedCredentialAction;
 import org.elasticsearch.xpack.core.security.action.oidc.OpenIdConnectAuthenticateAction;
 import org.elasticsearch.xpack.core.security.action.oidc.OpenIdConnectLogoutAction;
 import org.elasticsearch.xpack.core.security.action.oidc.OpenIdConnectPrepareAuthenticationAction;
@@ -251,6 +255,10 @@ import org.elasticsearch.xpack.security.action.apikey.TransportUpdateCrossCluste
 import org.elasticsearch.xpack.security.action.enrollment.TransportKibanaEnrollmentAction;
 import org.elasticsearch.xpack.security.action.enrollment.TransportNodeEnrollmentAction;
 import org.elasticsearch.xpack.security.action.filter.SecurityActionFilter;
+import org.elasticsearch.xpack.security.action.namedcredentials.TransportDecryptNamedCredentialAction;
+import org.elasticsearch.xpack.security.action.namedcredentials.TransportDeleteNamedCredentialAction;
+import org.elasticsearch.xpack.security.action.namedcredentials.TransportGetNamedCredentialsAction;
+import org.elasticsearch.xpack.security.action.namedcredentials.TransportPutNamedCredentialAction;
 import org.elasticsearch.xpack.security.action.oidc.TransportOpenIdConnectAuthenticateAction;
 import org.elasticsearch.xpack.security.action.oidc.TransportOpenIdConnectLogoutAction;
 import org.elasticsearch.xpack.security.action.oidc.TransportOpenIdConnectPrepareAuthenticationAction;
@@ -1860,6 +1868,10 @@ public class Security extends Plugin
             new ActionHandler(ActionTypes.RELOAD_REMOTE_CLUSTER_CREDENTIALS_ACTION, TransportReloadRemoteClusterCredentialsAction.class),
             new ActionHandler(UpdateIndexMigrationVersionAction.INSTANCE, UpdateIndexMigrationVersionAction.TransportAction.class),
             new ActionHandler(GetSecurityStatsAction.INSTANCE, TransportSecurityStatsAction.class),
+            new ActionHandler(PutNamedCredentialAction.INSTANCE, TransportPutNamedCredentialAction.class),
+            new ActionHandler(GetNamedCredentialsAction.INSTANCE, TransportGetNamedCredentialsAction.class),
+            new ActionHandler(DeleteNamedCredentialAction.INSTANCE, TransportDeleteNamedCredentialAction.class),
+            new ActionHandler(DecryptNamedCredentialAction.INSTANCE, TransportDecryptNamedCredentialAction.class),
             usageAction,
             infoAction
         ).filter(Objects::nonNull).toList();
