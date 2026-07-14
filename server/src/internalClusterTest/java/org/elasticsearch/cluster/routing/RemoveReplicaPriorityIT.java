@@ -105,10 +105,17 @@ public class RemoveReplicaPriorityIT extends ESIntegTestCase {
 
     private void awaitShardReplicaStates(int started, int initializing, int unassigned) {
         awaitClusterState(state -> {
-            IndexShardRoutingTable indexShardRoutingTable = state.routingTable().index(INDEX_NAME).shard(0);
-            return indexShardRoutingTable.shardsWithState(STARTED).size() == started
-                && indexShardRoutingTable.shardsWithState(INITIALIZING).size() == initializing
-                && indexShardRoutingTable.shardsWithState(UNASSIGNED).size() == unassigned;
+            IndexRoutingTable indexRoutingTable = state.routingTable().index(INDEX_NAME);
+            if (indexRoutingTable == null) {
+                return false;
+            }
+            IndexShardRoutingTable shardRoutingTable = indexRoutingTable.shard(0);
+            if (shardRoutingTable == null) {
+                return false;
+            }
+            return shardRoutingTable.shardsWithState(STARTED).size() == started
+                && shardRoutingTable.shardsWithState(INITIALIZING).size() == initializing
+                && shardRoutingTable.shardsWithState(UNASSIGNED).size() == unassigned;
         });
     }
 
