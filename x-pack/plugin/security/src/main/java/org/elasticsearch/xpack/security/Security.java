@@ -234,6 +234,8 @@ import org.elasticsearch.xpack.core.ssl.TransportTLSBootstrapCheck;
 import org.elasticsearch.xpack.core.ssl.action.GetCertificateInfoAction;
 import org.elasticsearch.xpack.core.ssl.action.TransportGetCertificateInfoAction;
 import org.elasticsearch.xpack.core.ssl.rest.RestGetCertificateInfoAction;
+import org.elasticsearch.xpack.encryption.spi.EncryptionService;
+import org.elasticsearch.xpack.encryption.spi.EncryptionServiceRegistry;
 import org.elasticsearch.xpack.security.action.TransportClearSecurityCacheAction;
 import org.elasticsearch.xpack.security.action.TransportDelegatePkiAuthenticationAction;
 import org.elasticsearch.xpack.security.action.apikey.TransportBulkUpdateApiKeyAction;
@@ -352,6 +354,7 @@ import org.elasticsearch.xpack.security.authz.store.NativePrivilegeStore;
 import org.elasticsearch.xpack.security.authz.store.NativeRolesStore;
 import org.elasticsearch.xpack.security.authz.store.RoleProviders;
 import org.elasticsearch.xpack.security.ingest.SetSecurityUserProcessor;
+import org.elasticsearch.xpack.security.namedcredentials.NamedCredentialsService;
 import org.elasticsearch.xpack.security.operator.DefaultOperatorOnlyRegistry;
 import org.elasticsearch.xpack.security.operator.FileOperatorUsersStore;
 import org.elasticsearch.xpack.security.operator.OperatorOnlyRegistry;
@@ -846,6 +849,20 @@ public class Security extends Plugin
         );
         this.tokenService.set(tokenService);
         components.add(tokenService);
+
+        EncryptionService encryptionService = null;
+        try {
+            encryptionService = EncryptionServiceRegistry.getEncryptionService();
+        } catch (IllegalStateException e) {
+            logger.debug("encryption service unavailable; named credentials APIs will return 503", e);
+        }
+        final NamedCredentialsService namedCredentialsService = new NamedCredentialsService(
+            client,
+            systemIndices.getNamedCredentialsIndexManager(),
+            encryptionService,
+            Clock.systemUTC()
+        );
+        components.add(namedCredentialsService);
 
         // realms construction
         final NativeUsersStore nativeUsersStore = new NativeUsersStore(settings, client, systemIndices.getMainIndexManager());
