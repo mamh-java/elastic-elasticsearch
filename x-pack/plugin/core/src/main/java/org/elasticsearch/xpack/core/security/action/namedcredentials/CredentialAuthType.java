@@ -111,6 +111,11 @@ public enum CredentialAuthType {
         for (String required : requiredAuthFields.stream().sorted().toList()) {
             if (auth.containsKey(required) == false) {
                 errors.add("missing required auth field [" + required + "] for auth_type [" + typeName + "]");
+            } else {
+                String value = auth.get(required);
+                if (value == null || value.isEmpty()) {
+                    errors.add("auth field [" + required + "] must not be empty for auth_type [" + typeName + "]");
+                }
             }
         }
         return errors;

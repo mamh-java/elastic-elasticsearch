@@ -149,6 +149,7 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
             client().performRequest(new Request("GET", "/_security/named_credentials/it-carry/_decrypt"))
         );
         assertThat(decrypted.evaluate("auth.username"), equalTo("u2"));
+        assertThat(decrypted.evaluate("auth.password"), equalTo("p2"));
     }
 
     public void testValidationErrors() throws Exception {

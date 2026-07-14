@@ -62,4 +62,12 @@ public class CredentialAuthTypeTests extends ESTestCase {
         );
         assertThat(CredentialAuthType.API_KEY_HEADER.validateAuth(Map.of("api_key", "k")), empty());
     }
+
+    public void testValidateAuthRejectsEmptyRequiredField() {
+        // password is required but blank — must produce an error
+        List<String> errors = CredentialAuthType.BASIC.validateAuth(Map.of("username", "u", "password", ""));
+        assertThat(errors, hasSize(1));
+        assertThat(errors.get(0), containsString("must not be empty"));
+        assertThat(errors.get(0), containsString("password"));
+    }
 }
