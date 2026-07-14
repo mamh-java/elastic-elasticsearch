@@ -62,7 +62,11 @@ public final class GetNamedCredentialsAction {
         private final boolean single;
 
         public Response(List<NamedCredential> credentials, boolean single) {
-            assert single == false || credentials.size() == 1;
+            if (single && credentials.size() != 1) {
+                throw new IllegalArgumentException(
+                    "a single-credential response must contain exactly one credential, got " + credentials.size()
+                );
+            }
             this.credentials = credentials;
             this.single = single;
         }
