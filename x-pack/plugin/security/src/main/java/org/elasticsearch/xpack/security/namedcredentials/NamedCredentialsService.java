@@ -34,6 +34,7 @@ import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.xcontent.ToXContent;
 import org.elasticsearch.xcontent.XContentFactory;
+import org.elasticsearch.xcontent.XContentParseException;
 import org.elasticsearch.xcontent.XContentParserConfiguration;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.CredentialAuthType;
@@ -415,7 +416,7 @@ public class NamedCredentialsService {
                 .createParser(XContentParserConfiguration.EMPTY, new BytesArray(blobBytes).streamInput())
         ) {
             encrypted = EncryptedData.fromXContent(parser);
-        } catch (IOException e) {
+        } catch (IOException | XContentParseException e) {
             throw new ElasticsearchStatusException("stored auth block is malformed", RestStatus.INTERNAL_SERVER_ERROR, e);
         }
         final byte[] plaintext = encryption.decrypt(encrypted);
