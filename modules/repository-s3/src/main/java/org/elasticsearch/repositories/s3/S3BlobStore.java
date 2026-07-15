@@ -119,6 +119,7 @@ class S3BlobStore implements BlobStore {
 
     private final ThreadPool threadPool;
     private final Executor snapshotExecutor;
+    private final Executor multipartUploadExecutor;
     private final S3RepositoriesMetrics s3RepositoriesMetrics;
 
     private final StatsCollectors statsCollectors = new StatsCollectors();
@@ -175,6 +176,7 @@ class S3BlobStore implements BlobStore {
         this.repositoryMetadata = repositoryMetadata;
         this.threadPool = threadPool;
         this.snapshotExecutor = threadPool.executor(ThreadPool.Names.SNAPSHOT);
+        this.multipartUploadExecutor = threadPool.executor(S3RepositoryPlugin.REPOSITORY_THREAD_POOL_NAME);
         this.s3RepositoriesMetrics = s3RepositoriesMetrics;
         this.bulkDeletionBatchSize = S3Repository.DELETION_BATCH_SIZE_SETTING.get(repositoryMetadata.settings());
         this.retryThrottledDeleteBackoffPolicy = retryThrottledDeleteBackoffPolicy;
@@ -189,6 +191,10 @@ class S3BlobStore implements BlobStore {
 
     public Executor getSnapshotExecutor() {
         return snapshotExecutor;
+    }
+
+    public Executor getMultipartUploadExecutor() {
+        return multipartUploadExecutor;
     }
 
     public TimeValue getCompareAndExchangeTimeToLive() {

@@ -35,6 +35,7 @@ import software.amazon.awssdk.services.s3.model.UploadPartCopyResponse;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 
+import org.elasticsearch.common.blobstore.BlobContainer;
 import org.elasticsearch.common.blobstore.BlobPath;
 import org.elasticsearch.common.blobstore.BlobStoreException;
 import org.elasticsearch.common.blobstore.OperationPurpose;
@@ -520,6 +521,80 @@ public class S3BlobStoreContainerTests extends ESTestCase {
             assertEquals(blobName, abortRequest.key());
             assertEquals(uploadId, abortRequest.uploadId());
         }
+
+        closeMockClient(blobStore);
+    }
+
+    public void testConcurrentWriteBlobAtomicAborted() {
+        final String bucketName = randomAlphaOfLengthBetween(1, 10);
+        final String blobName = randomAlphaOfLengthBetween(1, 10);
+        final long blobSize = ByteSizeUnit.MB.toBytes(765);
+        final long bufferSize = ByteSizeUnit.MB.toBytes(150);
+
+        final S3BlobStore blobStore = mock(S3BlobStore.class);
+        when(blobStore.bucket()).thenReturn(bucketName);
+        when(blobStore.bufferSizeInBytes()).thenReturn(bufferSize);
+        when(blobStore.getMultipartUploadExecutor()).thenReturn(Runnable::run);
+        when(blobStore.resolveStorageClass(any(OperationPurpose.class))).thenReturn(randomFrom(StorageClass.values()));
+        when(blobStore.serverSideEncryption()).thenReturn(false);
+        when(blobStore.supportsConditionalWrites()).thenReturn(false);
+
+        final S3Client client = configureMockClient(blobStore);
+        final String uploadId = randomAlphaOfLength(25);
+        final AwsServiceException s3Exception = S3Exception.builder().message("Expected failure").build();
+
+        // stages: 0=upload part throws S3Exception, 1=complete throws S3Exception, 2=provider throws IOException
+        final int stage = randomInt(2);
+        final IOException providerException = (stage == 2) ? new IOException("provider failure") : null;
+
+        when(client.createMultipartUpload(any(CreateMultipartUploadRequest.class))).thenReturn(
+            CreateMultipartUploadResponse.builder().uploadId(uploadId).build()
+        );
+
+        if (stage == 0) {
+            when(client.uploadPart(any(UploadPartRequest.class), any(RequestBody.class))).thenThrow(s3Exception);
+        } else if (stage == 1) {
+            when(client.uploadPart(any(UploadPartRequest.class), any(RequestBody.class))).thenAnswer(
+                inv -> UploadPartResponse.builder().eTag(randomAlphaOfLength(20)).build()
+            );
+            when(client.completeMultipartUpload(any(CompleteMultipartUploadRequest.class))).thenThrow(s3Exception);
+        }
+
+        final ArgumentCaptor<AbortMultipartUploadRequest> abortCaptor = ArgumentCaptor.forClass(AbortMultipartUploadRequest.class);
+        when(client.abortMultipartUpload(abortCaptor.capture())).thenReturn(AbortMultipartUploadResponse.builder().build());
+
+        final BlobContainer.BlobMultiPartInputStreamProvider provider = (stage == 2)
+            ? (offset, length) -> { throw providerException; }
+            : (offset, length) -> new ByteArrayInputStream(new byte[0]);
+
+        final IOException e = expectThrows(
+            IOException.class,
+            () -> new S3BlobContainer(BlobPath.EMPTY, blobStore).writeBlobAtomic(
+                randomPurpose(),
+                blobName,
+                blobSize,
+                provider,
+                randomBoolean()
+            )
+        );
+
+        if (stage == 0) {
+            assertEquals("Failed to upload parts for [" + blobName + "]", e.getMessage());
+            assertThat(e.getCause(), instanceOf(AwsServiceException.class));
+        } else if (stage == 1) {
+            assertEquals("Unable to upload object [" + blobName + "] using concurrent multipart upload", e.getMessage());
+            assertThat(e.getCause(), instanceOf(AwsServiceException.class));
+        } else {
+            assertSame(providerException, e);
+        }
+
+        verify(client, times(1)).createMultipartUpload(any(CreateMultipartUploadRequest.class));
+        verify(client, times(1)).abortMultipartUpload(any(AbortMultipartUploadRequest.class));
+
+        final AbortMultipartUploadRequest abortRequest = abortCaptor.getValue();
+        assertEquals(bucketName, abortRequest.bucket());
+        assertEquals(blobName, abortRequest.key());
+        assertEquals(uploadId, abortRequest.uploadId());
 
         closeMockClient(blobStore);
     }

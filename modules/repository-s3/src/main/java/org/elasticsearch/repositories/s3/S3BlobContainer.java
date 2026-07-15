@@ -77,6 +77,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.NoSuchFileException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -84,6 +85,8 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -333,6 +336,122 @@ class S3BlobContainer extends AbstractBlobContainer {
     public void writeBlobAtomic(OperationPurpose purpose, String blobName, BytesReference bytes, boolean failIfAlreadyExists)
         throws IOException {
         writeBlob(purpose, blobName, bytes, failIfAlreadyExists);
+    }
+
+    @Override
+    public boolean supportsConcurrentMultipartUploads() {
+        return true;
+    }
+
+    @Override
+    public void writeBlobAtomic(
+        OperationPurpose purpose,
+        String blobName,
+        long blobSize,
+        BlobMultiPartInputStreamProvider provider,
+        boolean failIfAlreadyExists
+    ) throws IOException {
+        assert BlobContainer.assertPurposeConsistency(purpose, blobName);
+        final String absoluteBlobKey = buildKey(blobName);
+        final ConditionalOperation condition = failIfAlreadyExists ? ConditionalOperation.IF_NONE_MATCH : ConditionalOperation.NONE;
+        if (blobSize <= getLargeBlobThresholdInBytes()) {
+            try (var stream = provider.apply(0L, blobSize)) {
+                writeBlob(purpose, blobName, stream, blobSize, failIfAlreadyExists);
+            }
+            return;
+        }
+        ensureMultiPartUploadSize(blobSize);
+        final long partSize = blobStore.bufferSizeInBytes();
+        final Tuple<Long, Long> multiparts = numberOfMultiparts(blobSize, partSize);
+        final int nbParts = multiparts.v1().intValue();
+        final long lastPartSize = multiparts.v2();
+        final String uploadId;
+        try (var clientReference = blobStore.clientReference()) {
+            uploadId = clientReference.client()
+                .createMultipartUpload(createMultipartUpload(purpose, Operation.PUT_MULTIPART_OBJECT, absoluteBlobKey))
+                .uploadId();
+        }
+        if (Strings.isEmpty(uploadId)) {
+            throw new IOException("Failed to initialize multipart upload for " + absoluteBlobKey);
+        }
+        boolean succeeded = false;
+        final List<CompletableFuture<Void>> futures = new ArrayList<>(nbParts);
+        try {
+            final CompletedPart[] completedParts = new CompletedPart[nbParts];
+            final var executor = blobStore.getMultipartUploadExecutor();
+            for (int i = 1; i <= nbParts; i++) {
+                final int partNum = i;
+                final boolean lastPart = (i == nbParts);
+                final long curPartSize = lastPart ? lastPartSize : partSize;
+                final long offset = (long) (partNum - 1) * partSize;
+                futures.add(CompletableFuture.runAsync(() -> {
+                    final UploadPartRequest uploadRequest = createPartUploadRequest(
+                        purpose,
+                        uploadId,
+                        partNum,
+                        absoluteBlobKey,
+                        curPartSize,
+                        lastPart
+                    );
+                    try {
+                        final InputStream stream = provider.apply(offset, curPartSize);
+                        try (stream; var clientReference = blobStore.clientReference()) {
+                            final UploadPartResponse uploadResponse = clientReference.client()
+                                .uploadPart(uploadRequest, RequestBody.fromInputStream(stream, curPartSize));
+                            completedParts[partNum - 1] = CompletedPart.builder().partNumber(partNum).eTag(uploadResponse.eTag()).build();
+                        }
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                }, executor));
+            }
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture<?>[0])).get();
+            } catch (ExecutionException e) {
+                final Throwable cause = e.getCause();
+                if (cause instanceof UncheckedIOException uioe) {
+                    throw uioe.getCause();
+                }
+                throw new IOException("Failed to upload parts for [" + blobName + "]", cause);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while uploading parts for [" + blobName + "]", e);
+            }
+            final var completeRequestBuilder = CompleteMultipartUploadRequest.builder()
+                .bucket(blobStore.bucket())
+                .key(absoluteBlobKey)
+                .uploadId(uploadId)
+                .multipartUpload(b -> b.parts(List.of(completedParts)));
+            if (blobStore.supportsConditionalWrites()) {
+                switch (condition) {
+                    case ConditionalOperation.IfMatch ifMatch -> completeRequestBuilder.ifMatch(ifMatch.etag);
+                    case ConditionalOperation.IfNoneMatch ignored -> completeRequestBuilder.ifNoneMatch("*");
+                    case ConditionalOperation.None ignored -> {
+                    }
+                }
+            }
+            S3BlobStore.configureRequestForMetrics(completeRequestBuilder, blobStore, Operation.PUT_MULTIPART_OBJECT, purpose);
+            try (var clientReference = blobStore.clientReference()) {
+                clientReference.client().completeMultipartUpload(completeRequestBuilder.build());
+            }
+            succeeded = true;
+        } catch (SdkException e) {
+            throw new IOException("Unable to upload object [" + blobName + "] using concurrent multipart upload", e);
+        } finally {
+            if (succeeded == false) {
+                futures.forEach(f -> f.cancel(false));
+                try {
+                    abortMultiPartUpload(purpose, uploadId, absoluteBlobKey);
+                } catch (Exception abortException) {
+                    logger.warn(
+                        "failed to abort multipart upload of [{}] with ID [{}] after failure",
+                        absoluteBlobKey,
+                        uploadId,
+                        abortException
+                    );
+                }
+            }
+        }
     }
 
     /**
