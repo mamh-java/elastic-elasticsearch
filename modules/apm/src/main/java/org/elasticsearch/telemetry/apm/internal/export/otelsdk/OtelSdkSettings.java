@@ -120,6 +120,15 @@ public final class OtelSdkSettings {
         NodeScope
     );
 
+    /**
+     * Instrument name patterns whose metrics are dropped.
+     * Patterns may contain the wildcards {@code *} (any run of characters) and {@code ?} (a single character).
+     */
+    public static final Setting<List<String>> TELEMETRY_METRICS_DISABLED = Setting.stringListSetting(
+        "telemetry.metrics.disabled",
+        NodeScope
+    );
+
     // --- Traces
 
     /** Maximum depth of child spans per request. {@code 0} exports only the root span.

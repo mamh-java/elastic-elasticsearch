@@ -10,6 +10,7 @@
 package org.elasticsearch.telemetry.apm;
 
 import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.sdk.metrics.SdkMeterProvider;
 import io.opentelemetry.sdk.metrics.data.LongPointData;
@@ -194,6 +195,30 @@ public class APMMeterRegistryTests extends ESTestCase {
         assertThat(longPoints(reEnabled, gaugeName), contains(7L));
 
         meterProvider.close();
+    }
+
+    public void testInstrumentTimingRecordsPerInstrument() {
+        InMemoryMetricReader reader = InMemoryMetricReader.create();
+        SdkMeterProvider provider = SdkMeterProvider.builder().registerMetricReader(reader).build();
+        Meter otelMeter = provider.get("elasticsearch");
+        APMMeterRegistry registry = new APMMeterService(TELEMETRY_ENABLED, () -> otelMeter, () -> noopOtel).getMeterRegistry();
+
+        registry.registerLongGauge("es.test.timed.current", "", "", () -> new LongWithAttributes(7L, Collections.emptyMap()));
+
+        Collection<MetricData> metrics = reader.collectAllMetrics();
+        MetricData timing = metrics.stream()
+            .filter(m -> m.getName().equals("es.apm.metrics.instrument.collection_time.histogram"))
+            .findFirst()
+            .orElse(null);
+        assertNotNull("timing histogram must be exported", timing);
+        List<String> timedInstruments = timing.getData()
+            .getPoints()
+            .stream()
+            .map(p -> p.getAttributes().get(AttributeKey.stringKey("es_instrument_name")))
+            .toList();
+        assertThat(timedInstruments, contains("es.test.timed.current"));
+
+        provider.close();
     }
 
     private static List<Long> longPoints(Collection<MetricData> metrics, String name) {

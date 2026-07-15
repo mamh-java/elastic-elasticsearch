@@ -105,6 +105,7 @@ public class APM extends Plugin implements NetworkPlugin, TelemetryPlugin {
             APMAgentSettings.TELEMETRY_METRICS_ENABLED_SETTING,
             OtelSdkSettings.TELEMETRY_METRICS_BUFFER_DISK_SIZE,
             OtelSdkSettings.TELEMETRY_METRICS_BUFFER_TTL,
+            OtelSdkSettings.TELEMETRY_METRICS_DISABLED,
             // Tracing
             APMAgentSettings.TELEMETRY_TRACING_ENABLED_SETTING,
             APMAgentSettings.TELEMETRY_TRACING_NAMES_INCLUDE_SETTING,
