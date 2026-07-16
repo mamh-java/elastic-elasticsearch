@@ -68,6 +68,7 @@ public final class PutNamedCredentialAction {
         private final CredentialAuthType authType;
         @Nullable
         private final String url;
+        @Nullable
         private final Map<String, String> config;
         @Nullable
         private final Map<String, String> auth;
@@ -82,7 +83,7 @@ public final class PutNamedCredentialAction {
             this.credentialName = credentialName;
             this.authType = authType;
             this.url = url;
-            this.config = config == null ? Map.of() : Map.copyOf(config);
+            this.config = config == null ? null : Map.copyOf(config);
             this.auth = auth == null ? null : Map.copyOf(auth);
         }
 
@@ -112,6 +113,7 @@ public final class PutNamedCredentialAction {
             return url;
         }
 
+        @Nullable
         public Map<String, String> config() {
             return config;
         }
@@ -144,7 +146,9 @@ public final class PutNamedCredentialAction {
         public ActionRequestValidationException validate() {
             List<String> errors = new ArrayList<>();
             validateCredentialName(credentialName, errors);
-            errors.addAll(authType.validateConfig(config));
+            if (config != null) {
+                errors.addAll(authType.validateConfig(config));
+            }
             if (auth != null) {
                 if (auth.isEmpty()) {
                     errors.add("auth must not be empty when provided; omit it entirely to keep the stored secrets");

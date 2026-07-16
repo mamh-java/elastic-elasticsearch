@@ -133,7 +133,18 @@ public class NamedCredentialsService {
             }
             final long now = clock.millis();
             final long createdAt = creating ? now : ((Number) existingSource.get("created_at")).longValue();
-            final Map<String, Object> source = buildSource(request, authBlob, createdAt, now);
+            // Carry-forward: if config omitted on update, keep the stored config.
+            final Map<String, String> effectiveConfig;
+            if (request.config() != null) {
+                effectiveConfig = request.config();
+            } else if (creating == false) {
+                @SuppressWarnings("unchecked")
+                Map<String, String> storedConfig = (Map<String, String>) existingSource.get("config");
+                effectiveConfig = storedConfig != null ? storedConfig : Map.of();
+            } else {
+                effectiveConfig = Map.of();
+            }
+            final Map<String, Object> source = buildSource(request, effectiveConfig, authBlob, createdAt, now);
             final IndexRequest indexRequest = client.prepareIndex(indexManager.aliasName())
                 .setId(request.credentialName())
                 .setSource(source)
@@ -190,7 +201,7 @@ public class NamedCredentialsService {
             .setQuery(QueryBuilders.matchAllQuery())
             .setSize(MAX_CREDENTIALS)
             .setFetchSource(true)
-            .addSort(SortBuilders.fieldSort("_id").order(SortOrder.ASC))
+            .addSort(SortBuilders.fieldSort("created_at").order(SortOrder.ASC))
             .request();
         indexState.checkIndexVersionThenExecute(
             listener::onFailure,
@@ -359,6 +370,7 @@ public class NamedCredentialsService {
 
     static Map<String, Object> buildSource(
         PutNamedCredentialAction.Request request,
+        Map<String, String> config,
         String authBlobBase64,
         long createdAt,
         long updatedAt
@@ -368,7 +380,7 @@ public class NamedCredentialsService {
         if (request.url() != null) {
             source.put("url", request.url());
         }
-        source.put("config", request.config());
+        source.put("config", config);
         source.put("auth", authBlobBase64);
         source.put("created_at", createdAt);
         source.put("updated_at", updatedAt);

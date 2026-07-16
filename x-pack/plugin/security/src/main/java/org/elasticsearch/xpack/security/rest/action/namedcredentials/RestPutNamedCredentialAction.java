@@ -60,7 +60,7 @@ public class RestPutNamedCredentialAction extends NamedCredentialsBaseRestHandle
         return channel -> client.execute(
             PutNamedCredentialAction.INSTANCE,
             req,
-            new RestToXContentListener<>(channel, PutNamedCredentialAction.Response::status)
+            new RestToXContentListener<>(channel, PutNamedCredentialAction.Response::status, r -> null)
         );
     }
 }

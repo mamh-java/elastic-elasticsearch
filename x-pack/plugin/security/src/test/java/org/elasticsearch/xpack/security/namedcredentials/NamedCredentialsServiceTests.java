@@ -58,7 +58,7 @@ public class NamedCredentialsServiceTests extends ESTestCase {
             Map.of("client_id", "a", "client_secret", "b")
         );
         String blob = NamedCredentialsService.encryptAuth(FAKE_ENCRYPTION, request.auth());
-        Map<String, Object> source = NamedCredentialsService.buildSource(request, blob, 1000L, 2000L);
+        Map<String, Object> source = NamedCredentialsService.buildSource(request, request.config(), blob, 1000L, 2000L);
         assertThat(source.get("auth_type"), equalTo("oauth_client_credentials"));
         assertThat(source.get("auth"), equalTo(blob));
         assertThat(source.get("created_at"), equalTo(1000L));
@@ -81,7 +81,7 @@ public class NamedCredentialsServiceTests extends ESTestCase {
             null,
             Map.of("token", "t")
         );
-        Map<String, Object> source = NamedCredentialsService.buildSource(request, "blob", 1L, 1L);
+        Map<String, Object> source = NamedCredentialsService.buildSource(request, Map.of(), "blob", 1L, 1L);
         assertThat(source.containsKey("url"), is(false));
         NamedCredential parsed = NamedCredentialsService.credentialFromSource("c1", source);
         assertThat(parsed.url(), nullValue());

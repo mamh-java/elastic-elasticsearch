@@ -17,7 +17,6 @@ import org.elasticsearch.xcontent.XContentType;
 import java.io.IOException;
 import java.util.Map;
 
-import static org.hamcrest.Matchers.anEmptyMap;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasEntry;
@@ -53,7 +52,7 @@ public class PutNamedCredentialRequestTests extends ESTestCase {
         PutNamedCredentialAction.Request request = parse("c1", """
             { "auth_type": "basic" }""");
         assertThat(request.auth(), nullValue());
-        assertThat(request.config(), anEmptyMap());
+        assertThat(request.config(), nullValue());
         assertThat(request.validate(), nullValue());
     }
 
