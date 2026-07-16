@@ -62,6 +62,7 @@ import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.collect.Iterators;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.util.concurrent.FutureUtils;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.core.CheckedConsumer;
 import org.elasticsearch.core.Nullable;
@@ -439,7 +440,7 @@ class S3BlobContainer extends AbstractBlobContainer {
             throw new IOException("Unable to upload object [" + blobName + "] using concurrent multipart upload", e);
         } finally {
             if (succeeded == false) {
-                futureTasks.forEach(f -> f.cancel(false));
+                futureTasks.forEach(FutureUtils::cancel);
                 try {
                     abortMultiPartUpload(purpose, uploadId, absoluteBlobKey);
                 } catch (Exception abortException) {
