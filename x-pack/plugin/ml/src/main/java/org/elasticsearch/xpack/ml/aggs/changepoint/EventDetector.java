@@ -34,9 +34,10 @@ public class EventDetector {
 
     private static final Logger logger = LogManager.getLogger(EventDetector.class);
 
-    // Runtime safeguard: detection cost grows with the bucket count (PELT's reset loop), so a series longer than
-    // this is collapsed by SeriesDownsampler before any detection. The downsampled series carries the original
-    // bucket indices, so events remap back to source buckets via getBucketIndex; below the cap it is a no-op.
+    // Runtime safeguard: detection cost grows slightly superlinearly with the bucket count (PELT's reset loop),
+    // so a series longer than this is collapsed by SeriesDownsampler before any detection. The downsampled series
+    // carries the original bucket indices, so events remap back to source buckets via getBucketIndex; below the
+    // cap it is a no-op.
     private static final int MAX_SAMPLES = 2000;
     // The minimum number of buckets between two structural changes for them to be reported as distinct events.
     // Anything shorter is considered a spike or dip.
