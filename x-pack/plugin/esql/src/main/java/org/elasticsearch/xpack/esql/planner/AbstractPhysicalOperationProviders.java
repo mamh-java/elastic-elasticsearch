@@ -36,7 +36,10 @@ import org.elasticsearch.xpack.esql.expression.function.aggregate.AggregateFunct
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.CountApproximate;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.ToPartial;
+import org.elasticsearch.xpack.esql.expression.function.grouping.Bucket;
 import org.elasticsearch.xpack.esql.expression.function.grouping.Categorize;
+import org.elasticsearch.xpack.esql.expression.function.grouping.TBucket;
+import org.elasticsearch.xpack.esql.expression.function.grouping.TStep;
 import org.elasticsearch.xpack.esql.optimizer.rules.physical.local.ExternalSourceAggregatePushdown;
 import org.elasticsearch.xpack.esql.plan.physical.AggregateExec;
 import org.elasticsearch.xpack.esql.plan.physical.EsQueryExec;
@@ -395,11 +398,13 @@ public abstract class AbstractPhysicalOperationProviders {
             if (channel == null) {
                 throw new EsqlIllegalArgumentException("planned to use ordinals but tried to use the hash instead");
             }
+            Expression unwrapped = Alias.unwrap(expression);
             return new BlockHash.GroupSpec(
                 channel,
                 elementType(),
-                Alias.unwrap(expression) instanceof Categorize categorize ? categorize.categorizeDef() : null,
-                topNDef
+                unwrapped instanceof Categorize categorize ? categorize.categorizeDef() : null,
+                topNDef,
+                unwrapped instanceof Bucket || unwrapped instanceof TBucket || unwrapped instanceof TStep
             );
         }
 

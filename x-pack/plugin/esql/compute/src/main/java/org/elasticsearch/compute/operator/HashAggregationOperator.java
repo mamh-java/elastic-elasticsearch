@@ -21,7 +21,6 @@ import org.elasticsearch.compute.aggregation.GroupingAggregatorFunction;
 import org.elasticsearch.compute.aggregation.blockhash.BlockHash;
 import org.elasticsearch.compute.aggregation.blockhash.TimeBucketBlockHash;
 import org.elasticsearch.compute.data.Block;
-import org.elasticsearch.compute.data.ElementType;
 import org.elasticsearch.compute.data.IntArrayBlock;
 import org.elasticsearch.compute.data.IntBigArrayBlock;
 import org.elasticsearch.compute.data.IntVector;
@@ -262,16 +261,13 @@ public class HashAggregationOperator implements Operator {
                 return new HashAggregationOperator(
                     aggregatorMode,
                     aggregators,
-                    () -> wrapBlockHash(
-                        driverContext,
-                        BlockHash.buildCategorizeBlockHash(
-                            groups,
-                            aggregatorMode,
-                            driverContext.blockFactory(),
-                            analysisRegistry,
-                            maxPageSize
-                        )
-                    ),
+                    () -> wrapBlockHash(driverContext,BlockHash.buildCategorizeBlockHash(
+                        groups,
+                        aggregatorMode,
+                        driverContext.blockFactory(),
+                        analysisRegistry,
+                        maxPageSize
+                    )),
                     Integer.MAX_VALUE, // disable partial emit for CATEGORIZE. it doesn't support it.
                     1.0,
                     Integer.MAX_VALUE, // disable splitting aggs pages for CATEGORIZE. it doesn't support it.
@@ -279,10 +275,24 @@ public class HashAggregationOperator implements Operator {
                     driverContext
                 );
             }
+
+            if(groups.getFirst().timeBucket()) {
+                return new HashAggregationOperator(
+                    aggregatorMode,
+                    aggregators,
+                    () -> wrapBlockHash(driverContext, new TimeBucketBlockHash(groups.getFirst().channel(), groups.subList(1, groups.size()), driverContext.blockFactory())),
+                    partialEmitKeysThreshold,
+                    partialEmitUniquenessThreshold,
+                    maxPageSize,
+                    topAggregation,
+                    driverContext
+                );
+            }
+
             return new HashAggregationOperator(
                 aggregatorMode,
                 aggregators,
-                () -> wrapBlockHash(driverContext, buildBlockHash(driverContext)),
+                () -> wrapBlockHash(driverContext, BlockHash.build(groups, driverContext.blockFactory(), aggregationBatchSize, false)),
                 partialEmitKeysThreshold,
                 partialEmitUniquenessThreshold,
                 maxPageSize,
@@ -291,18 +301,7 @@ public class HashAggregationOperator implements Operator {
             );
         }
 
-        private BlockHash buildBlockHash(DriverContext driverContext) {
-            // Use TimeBucketBlockHash for the (LONG timeBucket, BYTES_REF label...) shape produced
-            // by the coordinator-side aggregate of time-bucketed queries. Stores the label tuple once
-            // per distinct combination instead of re-copying it once per (timeBucket, labels) group.
-            if (groups.size() >= 2
-                && groups.get(0).elementType() == ElementType.LONG
-                && groups.subList(1, groups.size()).stream().allMatch(g -> g.elementType() == ElementType.BYTES_REF)) {
-                return new TimeBucketBlockHash(groups.get(0).channel(), groups.subList(1, groups.size()), driverContext.blockFactory());
-            }
-            return BlockHash.build(groups, driverContext.blockFactory(), aggregationBatchSize, false);
-        }
-
+        // hook for randomized testing used to override hash impl
         protected BlockHash wrapBlockHash(DriverContext driverContext, BlockHash hash) {
             return hash;
         }

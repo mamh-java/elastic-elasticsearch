@@ -914,7 +914,7 @@ public abstract class GroupingAggregatorFunctionTestCase extends ForkingOperator
      *     {@link org.elasticsearch.compute.aggregation.GroupingAggregatorFunction.AddInput#add}
      * </p>
      */
-    private class RandomizingHashAggregationOperatorFactory extends HashAggregationOperator.Factory {
+    private static class RandomizingHashAggregationOperatorFactory extends HashAggregationOperator.Factory {
         RandomizingHashAggregationOperatorFactory(HashAggregationOperator.Builder builder) {
             super(builder);
         }
