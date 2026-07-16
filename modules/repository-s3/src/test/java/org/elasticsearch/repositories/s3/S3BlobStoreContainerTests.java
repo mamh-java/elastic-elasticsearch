@@ -51,6 +51,10 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -595,6 +599,60 @@ public class S3BlobStoreContainerTests extends ESTestCase {
         assertEquals(bucketName, abortRequest.bucket());
         assertEquals(blobName, abortRequest.key());
         assertEquals(uploadId, abortRequest.uploadId());
+
+        closeMockClient(blobStore);
+    }
+
+    public void testConcurrentWriteBlobAtomicUploadsConcurrently() throws Exception {
+        final String bucketName = randomAlphaOfLengthBetween(1, 10);
+        final String blobName = randomAlphaOfLengthBetween(1, 10);
+        final int nbParts = randomIntBetween(2, 5);
+        final long minBufferSize = S3Repository.MIN_PART_SIZE_USING_MULTIPART.getBytes();
+        final long bufferSize = randomLongBetween(minBufferSize, minBufferSize * 2);
+        // nbParts = ceil(blobSize / bufferSize)
+        final long blobSize = randomLongBetween((nbParts - 1) * bufferSize + 1, nbParts * bufferSize);
+        assert nbParts == (blobSize + bufferSize - 1) / bufferSize;
+
+        final S3BlobStore blobStore = mock(S3BlobStore.class);
+        when(blobStore.bucket()).thenReturn(bucketName);
+        when(blobStore.bufferSizeInBytes()).thenReturn(bufferSize);
+        when(blobStore.resolveStorageClass(any(OperationPurpose.class))).thenReturn(randomFrom(StorageClass.values()));
+        when(blobStore.serverSideEncryption()).thenReturn(false);
+        when(blobStore.supportsConditionalWrites()).thenReturn(false);
+
+        final S3Client client = configureMockClient(blobStore);
+        when(client.createMultipartUpload(any(CreateMultipartUploadRequest.class))).thenReturn(
+            CreateMultipartUploadResponse.builder().uploadId(randomAlphaOfLength(25)).build()
+        );
+
+        // Barrier requires all nbParts threads to arrive before proceeding
+        final CyclicBarrier barrier = new CyclicBarrier(nbParts);
+        when(client.uploadPart(any(UploadPartRequest.class), any(RequestBody.class))).thenAnswer(inv -> {
+            safeAwait(barrier);
+            return UploadPartResponse.builder().eTag("test-etag").build();
+        });
+        when(client.completeMultipartUpload(any(CompleteMultipartUploadRequest.class))).thenReturn(
+            CompleteMultipartUploadResponse.builder().build()
+        );
+
+        final ExecutorService executorService = Executors.newFixedThreadPool(nbParts);
+        try {
+            new S3BlobContainer(BlobPath.EMPTY, blobStore).writeBlobAtomic(
+                randomPurpose(),
+                blobName,
+                blobSize,
+                (offset, length) -> new ByteArrayInputStream(new byte[0]),
+                randomBoolean(),
+                executorService
+            );
+        } finally {
+            executorService.shutdown();
+            assertTrue(executorService.awaitTermination(10, TimeUnit.SECONDS));
+        }
+
+        verify(client, times(1)).createMultipartUpload(any(CreateMultipartUploadRequest.class));
+        verify(client, times(nbParts)).uploadPart(any(UploadPartRequest.class), any(RequestBody.class));
+        verify(client, times(1)).completeMultipartUpload(any(CompleteMultipartUploadRequest.class));
 
         closeMockClient(blobStore);
     }
