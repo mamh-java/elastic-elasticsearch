@@ -21,9 +21,11 @@ import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.ESIntegTestCase.ClusterScope;
 
+import java.lang.management.ManagementFactory;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.containsString;
@@ -68,7 +70,10 @@ public class RejectionActionIT extends ESIntegTestCase {
         }
         // Bounded wait: some search requests can be stuck indefinitely (see #146022), in which case we'd
         // rather fail fast with a clear timeout than have the whole suite hang until it hits its own timeout.
-        safeAwait(latch, TimeValue.ONE_MINUTE);
+        if (latch.await(1, TimeUnit.MINUTES) == false) {
+            dumpStuckSearchDiagnostics(numberOfAsyncOps, responses.size());
+            fail("timed out: " + (numberOfAsyncOps - responses.size()) + " of " + numberOfAsyncOps + " searches never completed");
+        }
 
         // validate all responses
         for (Object response : responses) {
@@ -95,5 +100,46 @@ public class RejectionActionIT extends ESIntegTestCase {
             }
         }
         assertThat(responses.size(), equalTo(numberOfAsyncOps));
+    }
+
+    private void dumpStuckSearchDiagnostics(int numberOfAsyncOps, int completed) {
+        StringBuilder sb = new StringBuilder("RejectionActionIT stuck: ").append(numberOfAsyncOps - completed)
+            .append(" of ")
+            .append(numberOfAsyncOps)
+            .append(" searches never invoked their listener\n");
+
+        var threadBean = ManagementFactory.getThreadMXBean();
+        sb.append("thread dump:\n");
+        for (var info : threadBean.dumpAllThreads(true, true)) {
+            sb.append('"').append(info.getThreadName()).append("\" ").append(info.getThreadState());
+            if (info.getLockInfo() != null) {
+                sb.append(" waiting on ").append(info.getLockInfo());
+                if (info.getLockOwnerName() != null) {
+                    sb.append(" held by \"").append(info.getLockOwnerName()).append('"');
+                }
+            }
+            sb.append('\n');
+            for (var frame : info.getStackTrace()) {
+                sb.append("\tat ").append(frame).append('\n');
+            }
+            sb.append('\n');
+        }
+
+        sb.append("running search tasks:\n");
+        try {
+            var tasks = clusterAdmin().prepareListTasks()
+                .setActions("indices:data/read/search*")
+                .setDetailed(true)
+                .get(TimeValue.timeValueSeconds(10))
+                .getTasks();
+            sb.append("count=").append(tasks.size()).append('\n');
+            for (var task : tasks) {
+                sb.append("  ").append(task).append('\n');
+            }
+        } catch (Exception e) {
+            sb.append("failed to list running search tasks: ").append(e).append('\n');
+        }
+
+        logger.error("{}", sb);
     }
 }
