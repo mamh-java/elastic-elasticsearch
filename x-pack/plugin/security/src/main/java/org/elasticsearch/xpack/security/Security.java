@@ -868,6 +868,9 @@ public class Security extends Plugin
             encryptionService = EncryptionServiceRegistry.getEncryptionService();
         } catch (IllegalStateException e) {
             logger.debug("encryption service unavailable; named credentials APIs will return 503", e);
+        } catch (NoClassDefFoundError e) {
+            // x-pack-encryption is not present in all distributions (e.g. integ-test-zip, BWC snapshots)
+            logger.debug("encryption plugin not loaded; named credentials APIs will return 503", e);
         }
         final NamedCredentialsService namedCredentialsService = new NamedCredentialsService(
             client,
