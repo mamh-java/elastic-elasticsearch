@@ -130,8 +130,8 @@ public class StatelessMockRepositoryStrategy {
     }
 
     /**
-     * Called in
-     * {@link BlobContainer#writeBlobAtomic(OperationPurpose, String, long, BlobContainer.BlobMultiPartInputStreamProvider, boolean, Executor)}.
+     * Called in {@link BlobContainer#writeBlobAtomic(OperationPurpose, String, long,
+     * BlobContainer.BlobMultiPartInputStreamProvider, boolean, Executor)}.
      */
     public void blobContainerWriteBlobAtomic(
         CheckedRunnable<IOException> originalRunnable,
