@@ -77,7 +77,6 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.UncheckedIOException;
 import java.nio.file.NoSuchFileException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -85,8 +84,9 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -349,7 +349,8 @@ class S3BlobContainer extends AbstractBlobContainer {
         String blobName,
         long blobSize,
         BlobMultiPartInputStreamProvider provider,
-        boolean failIfAlreadyExists
+        boolean failIfAlreadyExists,
+        Executor executor
     ) throws IOException {
         assert BlobContainer.assertPurposeConsistency(purpose, blobName);
         final String absoluteBlobKey = buildKey(blobName);
@@ -375,16 +376,14 @@ class S3BlobContainer extends AbstractBlobContainer {
             throw new IOException("Failed to initialize multipart upload for " + absoluteBlobKey);
         }
         boolean succeeded = false;
-        final List<CompletableFuture<Void>> futures = new ArrayList<>(nbParts);
+        final List<FutureTask<CompletedPart>> futureTasks = new ArrayList<>(nbParts);
         try {
-            final CompletedPart[] completedParts = new CompletedPart[nbParts];
-            final var executor = blobStore.getMultipartUploadExecutor();
             for (int i = 1; i <= nbParts; i++) {
                 final int partNum = i;
                 final boolean lastPart = (i == nbParts);
                 final long curPartSize = lastPart ? lastPartSize : partSize;
                 final long offset = (long) (partNum - 1) * partSize;
-                futures.add(CompletableFuture.runAsync(() -> {
+                final FutureTask<CompletedPart> task = new FutureTask<>(() -> {
                     final UploadPartRequest uploadRequest = createPartUploadRequest(
                         purpose,
                         uploadId,
@@ -393,24 +392,25 @@ class S3BlobContainer extends AbstractBlobContainer {
                         curPartSize,
                         lastPart
                     );
-                    try {
-                        final InputStream stream = provider.apply(offset, curPartSize);
-                        try (stream; var clientReference = blobStore.clientReference()) {
-                            final UploadPartResponse uploadResponse = clientReference.client()
-                                .uploadPart(uploadRequest, RequestBody.fromInputStream(stream, curPartSize));
-                            completedParts[partNum - 1] = CompletedPart.builder().partNumber(partNum).eTag(uploadResponse.eTag()).build();
-                        }
-                    } catch (IOException e) {
-                        throw new UncheckedIOException(e);
+                    final InputStream stream = provider.apply(offset, curPartSize);
+                    try (stream; var clientReference = blobStore.clientReference()) {
+                        final UploadPartResponse uploadResponse = clientReference.client()
+                            .uploadPart(uploadRequest, RequestBody.fromInputStream(stream, curPartSize));
+                        return CompletedPart.builder().partNumber(partNum).eTag(uploadResponse.eTag()).build();
                     }
-                }, executor));
+                });
+                futureTasks.add(task);
+                executor.execute(task);
             }
+            final CompletedPart[] completedParts = new CompletedPart[nbParts];
             try {
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture<?>[0])).get();
+                for (int i = 0; i < nbParts; i++) {
+                    completedParts[i] = futureTasks.get(i).get();
+                }
             } catch (ExecutionException e) {
                 final Throwable cause = e.getCause();
-                if (cause instanceof UncheckedIOException uioe) {
-                    throw uioe.getCause();
+                if (cause instanceof IOException ioe) {
+                    throw ioe;
                 }
                 throw new IOException("Failed to upload parts for [" + blobName + "]", cause);
             } catch (InterruptedException e) {
@@ -439,7 +439,7 @@ class S3BlobContainer extends AbstractBlobContainer {
             throw new IOException("Unable to upload object [" + blobName + "] using concurrent multipart upload", e);
         } finally {
             if (succeeded == false) {
-                futures.forEach(f -> f.cancel(false));
+                futureTasks.forEach(f -> f.cancel(false));
                 try {
                     abortMultiPartUpload(purpose, uploadId, absoluteBlobKey);
                 } catch (Exception abortException) {

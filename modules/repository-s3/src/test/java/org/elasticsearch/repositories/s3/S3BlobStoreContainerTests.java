@@ -534,7 +534,6 @@ public class S3BlobStoreContainerTests extends ESTestCase {
         final S3BlobStore blobStore = mock(S3BlobStore.class);
         when(blobStore.bucket()).thenReturn(bucketName);
         when(blobStore.bufferSizeInBytes()).thenReturn(bufferSize);
-        when(blobStore.getMultipartUploadExecutor()).thenReturn(Runnable::run);
         when(blobStore.resolveStorageClass(any(OperationPurpose.class))).thenReturn(randomFrom(StorageClass.values()));
         when(blobStore.serverSideEncryption()).thenReturn(false);
         when(blobStore.supportsConditionalWrites()).thenReturn(false);
@@ -574,7 +573,8 @@ public class S3BlobStoreContainerTests extends ESTestCase {
                 blobName,
                 blobSize,
                 provider,
-                randomBoolean()
+                randomBoolean(),
+                Runnable::run
             )
         );
 

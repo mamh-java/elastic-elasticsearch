@@ -23,6 +23,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -130,7 +131,7 @@ public class StatelessMockRepositoryStrategy {
 
     /**
      * Called in
-     * {@link BlobContainer#writeBlobAtomic(OperationPurpose, String, long, BlobContainer.BlobMultiPartInputStreamProvider, boolean)}.
+     * {@link BlobContainer#writeBlobAtomic(OperationPurpose, String, long, BlobContainer.BlobMultiPartInputStreamProvider, boolean, Executor)}.
      */
     public void blobContainerWriteBlobAtomic(
         CheckedRunnable<IOException> originalRunnable,
@@ -138,7 +139,8 @@ public class StatelessMockRepositoryStrategy {
         String blobName,
         long blobSize,
         BlobContainer.BlobMultiPartInputStreamProvider provider,
-        boolean failIfAlreadyExists
+        boolean failIfAlreadyExists,
+        Executor executor
     ) throws IOException {
         originalRunnable.run();
     }

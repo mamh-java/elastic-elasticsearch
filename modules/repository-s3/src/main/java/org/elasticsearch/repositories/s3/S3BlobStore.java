@@ -40,7 +40,6 @@ import org.elasticsearch.common.blobstore.OperationPurpose;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.Maps;
-import org.elasticsearch.common.util.concurrent.ThrottledTaskRunner;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.repositories.RepositoriesMetrics;
@@ -120,7 +119,6 @@ class S3BlobStore implements BlobStore {
 
     private final ThreadPool threadPool;
     private final Executor snapshotExecutor;
-    private final ThrottledTaskRunner multipartUploadThrottle;
     private final S3RepositoriesMetrics s3RepositoriesMetrics;
 
     private final StatsCollectors statsCollectors = new StatsCollectors();
@@ -177,11 +175,6 @@ class S3BlobStore implements BlobStore {
         this.repositoryMetadata = repositoryMetadata;
         this.threadPool = threadPool;
         this.snapshotExecutor = threadPool.executor(ThreadPool.Names.SNAPSHOT);
-        this.multipartUploadThrottle = new ThrottledTaskRunner(
-            "s3_multipart_upload",
-            Math.max(1, Runtime.getRuntime().availableProcessors() / 2),
-            threadPool.executor(ThreadPool.Names.WRITE)
-        );
         this.s3RepositoriesMetrics = s3RepositoriesMetrics;
         this.bulkDeletionBatchSize = S3Repository.DELETION_BATCH_SIZE_SETTING.get(repositoryMetadata.settings());
         this.retryThrottledDeleteBackoffPolicy = retryThrottledDeleteBackoffPolicy;
@@ -196,10 +189,6 @@ class S3BlobStore implements BlobStore {
 
     public Executor getSnapshotExecutor() {
         return snapshotExecutor;
-    }
-
-    public Executor getMultipartUploadExecutor() {
-        return multipartUploadThrottle.asExecutor();
     }
 
     public TimeValue getCompareAndExchangeTimeToLive() {

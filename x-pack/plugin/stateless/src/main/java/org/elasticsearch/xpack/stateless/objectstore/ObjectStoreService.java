@@ -1624,7 +1624,8 @@ public class ObjectStoreService extends AbstractLifecycleComponent implements Cl
                             (offset, length) -> new LocalIOInputStream(
                                 virtualBatchedCompoundCommit.getFrozenInputStreamForUpload(offset, length)
                             ),
-                            false
+                            false,
+                            threadPool.executor(StatelessPlugin.SHARD_WRITE_THREAD_POOL)
                         );
                     } finally {
                         virtualBatchedCompoundCommit.decRef();
