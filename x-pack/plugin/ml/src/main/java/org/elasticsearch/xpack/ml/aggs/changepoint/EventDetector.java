@@ -57,9 +57,11 @@ public class EventDetector {
     // stride/window: every window/stride overlapping samples count as one independent observation. This holds the
     // null false-positive rate at the non-overlapping level.
     private static final double DISPERSION_SAMPLE_INDEPENDENCE = (double) DISPERSION_STRIDE / DISPERSION_WINDOW;
-    // Because we downsample the dispersion channel it has significantly fewer values original time series. To
-    // compensate we also use shorter segments. This means high degree trends overfit and we limit to linear only.
+    // The maximum degree trend model we'll fit to each segment of the original time series. Because we downsample
+    // the dispersion channel it has significantly fewer values. To compensate we also use shorter segments. This
+    // means high degree trends overfit and we limit to linear only.
     private static final int DISPERSION_MAX_DEGREE = 1;
+    // The maximum degree trend model we'll fit to each segment of the original time series.
     private static final int VALUE_MAX_DEGREE = 3;
 
     private final int minSegmentLength;
