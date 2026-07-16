@@ -210,20 +210,45 @@ public class RetainedSearchContextsRegistryTests extends ESTestCase {
         assertTrue(searchContext.isClosed());
     }
 
-    public void testExpireDoesNotReleaseActiveLease() {
+    public void testExpireSkipsActiveProducer() {
         long[] now = new long[] { 0L };
         RetainedSearchContextsRegistry expiringRegistry = new RetainedSearchContextsRegistry(() -> now[0], TimeValue.timeValueMillis(10));
         SearchContext searchContext = createSearchContext();
         AcquiredSearchContexts contexts = createContexts(searchContext);
 
         RetainedSearchContextsRegistry.Handle registration = expiringRegistry.register("session-1", contexts);
-        RetainedSearchContextsRegistry.Handle lease = expiringRegistry.acquire("session-1");
-        registration.close();
         now[0] = 11L;
 
         expiringRegistry.expire();
 
         assertThat(expiringRegistry.retainedSessions(), equalTo(1));
+        assertFalse(searchContext.isClosed());
+
+        registration.close();
+
+        assertThat(expiringRegistry.retainedSessions(), equalTo(0));
+        assertTrue(searchContext.isClosed());
+    }
+
+    public void testExpireKeepsRegistrationOpenWithActiveLease() {
+        long[] now = new long[] { 0L };
+        RetainedSearchContextsRegistry expiringRegistry = new RetainedSearchContextsRegistry(() -> now[0], TimeValue.timeValueMillis(10));
+        SearchContext searchContext = createSearchContext();
+        AcquiredSearchContexts contexts = createContexts(searchContext);
+
+        RetainedSearchContextsRegistry.Handle registration = expiringRegistry.register("session-1", contexts);
+        registration.finishRegistration();
+        RetainedSearchContextsRegistry.Handle lease = expiringRegistry.acquire("session-1");
+        now[0] = 11L;
+
+        expiringRegistry.expire();
+
+        assertThat(expiringRegistry.retainedSessions(), equalTo(1));
+        assertFalse(searchContext.isClosed());
+
+        RetainedSearchContextsRegistry.Handle secondLease = expiringRegistry.acquire("session-1");
+        registration.close();
+        secondLease.close();
         assertFalse(searchContext.isClosed());
 
         lease.close();
