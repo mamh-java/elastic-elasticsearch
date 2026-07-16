@@ -178,7 +178,7 @@ public class RetainedSearchContextsRegistryTests extends ESTestCase {
         assertTrue(searchContext.isClosed());
     }
 
-    public void testAcquireAfterRegistrationCloseRejectedWhileLeaseIsActive() {
+    public void testClosedRegistrationRejectsAcquireWithActiveLease() {
         SearchContext searchContext = createSearchContext();
         AcquiredSearchContexts contexts = createContexts(searchContext);
 

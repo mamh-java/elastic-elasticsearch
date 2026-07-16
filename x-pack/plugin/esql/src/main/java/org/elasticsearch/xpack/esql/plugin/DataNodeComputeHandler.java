@@ -817,7 +817,7 @@ final class DataNodeComputeHandler implements TransportRequestHandler<DataNodeRe
             return;
         }
         final String sessionId = request.sessionId();
-        final String nodeReduceSessionId = nodeReduceSessionId(sessionId);
+        final String nodeReduceSessionId = sessionId + "[n]";
         request = new DataNodeRequest(
             nodeReduceSessionId, // internal session
             request.configuration(),
@@ -877,10 +877,6 @@ final class DataNodeComputeHandler implements TransportRequestHandler<DataNodeRe
             planTimeProfile,
             responseListener
         );
-    }
-
-    private static String nodeReduceSessionId(String sessionId) {
-        return sessionId + "[n]";
     }
 
     private void handleExternalSourceRequest(
