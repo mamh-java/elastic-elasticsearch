@@ -24,6 +24,7 @@ import org.elasticsearch.compute.data.ElementType;
 import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.IntVector;
 import org.elasticsearch.compute.data.LongBlock;
+import org.elasticsearch.compute.data.LongVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.operator.BreakingBytesRefBuilder;
 import org.elasticsearch.compute.operator.topn.TopNEncoder;
@@ -33,72 +34,53 @@ import org.elasticsearch.core.Releasables;
 import java.util.List;
 
 /**
- * A {@link BlockHash} for groupings shaped like {@code (prefix, tail1, tail2, ..., tailN)} where
- * the {@code tail} columns, taken together as one tuple, recur unchanged across many different
- * {@code prefix} values - the classic shape of a time-bucketed aggregate
- * ({@code STATS ... BY bucket(...), dim1, dim2, ..., dimN}, the shape produced for the
- * coordinator-side aggregate by {@code TranslateTimeSeriesAggregate}), but not limited to it: any
- * grouping where one column varies often while the rest of the tuple repeats fits this shape.
+ * A {@link BlockHash} for the coordinator-side aggregate produced by time-bucketed aggregations:
+ * {@code (timeBucket: LONG, label1: BYTES_REF, ..., labelN: BYTES_REF)}.
  * <p>
- * The generic fallback for wide/mixed-type groupings, {@link PackedValuesBlockHash}, flattens
- * {@code (prefix, tail1, ..., tailN)} into one composite byte string per row and hashes that
- * directly. When the tail repeats, this is wasteful: the same tail bytes get physically re-copied
- * once per distinct prefix value the tail is paired with, instead of once per distinct tail.
+ * In this shape the {@code label} columns, taken together as one tuple, recur unchanged across
+ * every time bucket a series appears in. {@link PackedValuesBlockHash} is wasteful here: it
+ * flattens all columns into one composite byte string per row, re-copying the label bytes once per
+ * distinct bucket instead of once per distinct label combination.
  * <p>
- * This class avoids that by hashing the tail tuple through its own dictionary first, reducing it
- * to a small integer ordinal, and storing the raw tail bytes only once per distinct tail. The
- * outer hash that actually assigns group ids is then a cheap two-{@code long} hash keyed on
- * {@code (tailOrdinal, prefix)} - the same dictionary pattern {@link TimeSeriesBlockHash} already
+ * This class avoids that by hashing the label tuple through its own dictionary first, reducing it
+ * to a small integer ordinal, and storing the raw label bytes only once per distinct combination.
+ * The outer hash that assigns group IDs is then a cheap two-{@code long} hash keyed on
+ * {@code (labelOrdinal, timeBucket)} — the same dictionary pattern {@link TimeSeriesBlockHash}
  * uses for {@code (tsid, timestamp)}.
  * <p>
- * This is a proof-of-concept, not production ready. Known gaps, tracked as TODOs below and in
- * {@link BlockHash#build}:
- * <ul>
- *   <li>TODO: tail columns must currently be single-valued - a multi-valued tail column throws
- *       {@link UnsupportedOperationException} instead of doing {@link PackedValuesBlockHash}'s
- *       correct combinatorial expansion. Needed before this can replace the generic fallback for
- *       real, unscoped traffic.</li>
- *   <li>TODO: {@link #lookup} is unimplemented (mirrors the same gap in {@link TimeSeriesBlockHash}
- *       for the same reason - only {@code add} is exercised by the aggregate use case this targets).
- *       Needs a real implementation if this is ever used somewhere lookups matter (e.g. a join).</li>
- *   <li>TODO: no cardinality/size-based fallback - if the tail turns out to have little or no
- *       repetition in practice, this pays a small extra indirection (the dictionary lookup) for no
- *       benefit over {@link PackedValuesBlockHash}. Not currently a problem for the query this was
- *       built for, but worth measuring before using this shape more broadly.</li>
- *   <li>TODO: not wired into the planner. Currently only reachable via a temporary, unsafe dispatch
- *       hook in {@link BlockHash#build} - see the TODO there for what real wiring should look like.</li>
- * </ul>
+ * Label columns must be single-valued; a multi-valued label column throws
+ * {@link UnsupportedOperationException}. This is safe for the coordinator aggregate emitted by
+ * {@code TranslateTimeSeriesAggregate}, where label values are collected by {@code VALUES()} over
+ * per-series groups and are therefore always single-valued.
+ * <p>
+ * {@link #lookup} is unimplemented, mirroring {@link TimeSeriesBlockHash}, since only
+ * {@code GroupingAggregatorFunction#add} is used for the aggregate use case this class targets.
  */
-public final class PrefixBlockHash extends BlockHash {
+public final class TimeBucketBlockHash extends BlockHash {
 
     private static final TopNEncoder ENCODER = TopNEncoder.DEFAULT_UNSORTABLE;
 
-    private final int prefixChannel;
-    private final ElementType prefixType;
+    private final int timeBucketChannel;
     private final List<GroupSpec> tailSpecs;
     private final int nullTrackingBytes;
 
-    // Package-private (not private) so tests can inspect ramBytesUsed() directly, matching the same
-    // precedent as PackedValuesBlockHash#bytesRefHash.
+    // Package-private so tests can inspect ramBytesUsed() directly, matching the precedent set by
+    // PackedValuesBlockHash#bytesRefHash.
     final BytesRefHashTable tailDictionary;
     final LongLongHashTable outerHash;
     private final BreakingBytesRefBuilder packBuffer;
     private final BytesRef scratch = new BytesRef();
 
-    public PrefixBlockHash(int prefixChannel, ElementType prefixType, List<GroupSpec> tailSpecs, BlockFactory blockFactory) {
+    public TimeBucketBlockHash(int timeBucketChannel, List<GroupSpec> tailSpecs, BlockFactory blockFactory) {
         super(blockFactory);
-        if (prefixType != ElementType.LONG && prefixType != ElementType.INT) {
-            throw new IllegalArgumentException("prefix column must be LONG or INT, got [" + prefixType + "]");
-        }
-        this.prefixChannel = prefixChannel;
-        this.prefixType = prefixType;
+        this.timeBucketChannel = timeBucketChannel;
         this.tailSpecs = tailSpecs;
         this.nullTrackingBytes = (tailSpecs.size() + 7) / 8;
         boolean success = false;
         try {
             this.tailDictionary = HashImplFactory.newBytesRefHash(blockFactory);
             this.outerHash = HashImplFactory.newLongLongHash(blockFactory);
-            this.packBuffer = new BreakingBytesRefBuilder(blockFactory.breaker(), "PrefixBlockHash", 128);
+            this.packBuffer = new BreakingBytesRefBuilder(blockFactory.breaker(), "TimeBucketBlockHash", 128);
             success = true;
         } finally {
             if (success == false) {
@@ -114,20 +96,20 @@ public final class PrefixBlockHash extends BlockHash {
 
     @Override
     public void add(Page page, GroupingAggregatorFunction.AddInput addInput) {
-        final int positionCount = page.getPositionCount();
-        final Block prefixBlock = page.getBlock(prefixChannel);
+        final LongBlock timeBucketBlock = page.getBlock(timeBucketChannel);
+        final LongVector timeBuckets = timeBucketBlock.asVector();
+        if (timeBuckets == null) {
+            throw new IllegalStateException("Expected a non-null vector for time bucket");
+        }
+        final int positionCount = timeBuckets.getPositionCount();
         final Block[] tailBlocks = new Block[tailSpecs.size()];
         for (int g = 0; g < tailSpecs.size(); g++) {
             tailBlocks[g] = page.getBlock(tailSpecs.get(g).channel());
         }
         try (var groupIdsBuilder = blockFactory.newIntVectorFixedBuilder(positionCount)) {
             for (int p = 0; p < positionCount; p++) {
-                if (prefixBlock.isNull(p)) {
-                    throw new UnsupportedOperationException("null prefix values are not supported by PrefixBlockHash");
-                }
-                long prefixValue = readPrefixValue(prefixBlock, prefixBlock.getFirstValueIndex(p));
                 long ordinal = hashOrdToGroup(tailDictionary.add(packTail(tailBlocks, p)));
-                long groupId = hashOrdToGroup(outerHash.add(ordinal, prefixValue));
+                long groupId = hashOrdToGroup(outerHash.add(ordinal, timeBuckets.getLong(p)));
                 groupIdsBuilder.appendInt(p, Math.toIntExact(groupId));
             }
             try (var groupIds = groupIdsBuilder.build()) {
@@ -136,15 +118,7 @@ public final class PrefixBlockHash extends BlockHash {
         }
     }
 
-    private long readPrefixValue(Block block, int valueIndex) {
-        return switch (prefixType) {
-            case LONG -> ((LongBlock) block).getLong(valueIndex);
-            case INT -> ((IntBlock) block).getInt(valueIndex);
-            default -> throw new IllegalStateException("unreachable: prefix type checked in constructor");
-        };
-    }
-
-    /** Packs one row's tail values into {@link #packBuffer}, returning a view of it. */
+    /** Packs one row's label values into {@link #packBuffer}, returning a view of it. */
     private BytesRef packTail(Block[] tailBlocks, int position) {
         packBuffer.clear();
         byte[] nullBitmap = new byte[nullTrackingBytes];
@@ -160,7 +134,7 @@ public final class PrefixBlockHash extends BlockHash {
                 continue;
             }
             if (block.getValueCount(position) != 1) {
-                throw new UnsupportedOperationException("PrefixBlockHash does not support multi-valued tail columns yet");
+                throw new UnsupportedOperationException("TimeBucketBlockHash does not support multi-valued label columns");
             }
             int valueIndex = block.getFirstValueIndex(position);
             switch (block.elementType()) {
@@ -169,7 +143,7 @@ public final class PrefixBlockHash extends BlockHash {
                 case INT -> ENCODER.encodeInt(((IntBlock) block).getInt(valueIndex), packBuffer);
                 case DOUBLE -> ENCODER.encodeDouble(((DoubleBlock) block).getDouble(valueIndex), packBuffer);
                 case BOOLEAN -> ENCODER.encodeBoolean(((BooleanBlock) block).getBoolean(valueIndex), packBuffer);
-                default -> throw new IllegalStateException("unsupported tail element type [" + block.elementType() + "]");
+                default -> throw new IllegalStateException("unsupported label element type [" + block.elementType() + "]");
             }
         }
         return packBuffer.bytesRefView();
@@ -187,20 +161,11 @@ public final class PrefixBlockHash extends BlockHash {
         final int positionCount = selected.getPositionCount();
         final Block[] result = new Block[1 + tailSpecs.size()];
 
-        if (prefixType == ElementType.LONG) {
-            try (var b = blockFactory.newLongVectorFixedBuilder(positionCount)) {
-                for (int p = 0; p < positionCount; p++) {
-                    b.appendLong(p, outerHash.getKey2(selected.getInt(p)));
-                }
-                result[0] = b.build().asBlock();
+        try (var b = blockFactory.newLongVectorFixedBuilder(positionCount)) {
+            for (int p = 0; p < positionCount; p++) {
+                b.appendLong(p, outerHash.getKey2(selected.getInt(p)));
             }
-        } else {
-            try (var b = blockFactory.newIntVectorFixedBuilder(positionCount)) {
-                for (int p = 0; p < positionCount; p++) {
-                    b.appendInt(p, Math.toIntExact(outerHash.getKey2(selected.getInt(p))));
-                }
-                result[0] = b.build().asBlock();
-            }
+            result[0] = b.build().asBlock();
         }
 
         final Block.Builder[] builders = new Block.Builder[tailSpecs.size()];
@@ -220,10 +185,6 @@ public final class PrefixBlockHash extends BlockHash {
             }
             success = true;
         } finally {
-            // Builders must be closed whether or not build() was called on them - ownership of their
-            // backing arrays transfers to the built Block on success, this is just releasing the
-            // (now-empty) builder itself, matching the try-with-resources pattern used everywhere else
-            // in this codebase (e.g. InternalPacks/PackedValuesBlockHash).
             Releasables.close(builders);
             if (success == false) {
                 Releasables.close(result[0]);
@@ -239,11 +200,11 @@ public final class PrefixBlockHash extends BlockHash {
             case INT -> blockFactory.newIntBlockBuilder(positionCount);
             case DOUBLE -> blockFactory.newDoubleBlockBuilder(positionCount);
             case BOOLEAN -> blockFactory.newBooleanBlockBuilder(positionCount);
-            default -> throw new IllegalStateException("unsupported tail element type [" + type + "]");
+            default -> throw new IllegalStateException("unsupported label element type [" + type + "]");
         };
     }
 
-    /** Reverses {@link #packTail}: decodes one tail tuple's packed bytes back into typed columns. */
+    /** Reverses {@link #packTail}: decodes one label tuple's packed bytes back into typed columns. */
     private void unpackTail(BytesRef packed, Block.Builder[] builders) {
         BytesRef cursor = new BytesRef(packed.bytes, packed.offset, packed.length);
         byte[] nullBitmap = new byte[nullTrackingBytes];
@@ -264,7 +225,7 @@ public final class PrefixBlockHash extends BlockHash {
                 case INT -> ((IntBlock.Builder) builders[g]).appendInt(ENCODER.decodeInt(cursor));
                 case DOUBLE -> ((DoubleBlock.Builder) builders[g]).appendDouble(ENCODER.decodeDouble(cursor));
                 case BOOLEAN -> ((BooleanBlock.Builder) builders[g]).appendBoolean(ENCODER.decodeBoolean(cursor));
-                default -> throw new IllegalStateException("unsupported tail element type [" + tailSpecs.get(g).elementType() + "]");
+                default -> throw new IllegalStateException("unsupported label element type [" + tailSpecs.get(g).elementType() + "]");
             }
         }
     }
@@ -286,9 +247,9 @@ public final class PrefixBlockHash extends BlockHash {
 
     @Override
     public String toString() {
-        return "PrefixBlockHash{prefix=["
-            + prefixChannel
-            + "], tail="
+        return "TimeBucketBlockHash{timeBucket=["
+            + timeBucketChannel
+            + "], labels="
             + tailSpecs.size()
             + ", entries="
             + outerHash.size()
