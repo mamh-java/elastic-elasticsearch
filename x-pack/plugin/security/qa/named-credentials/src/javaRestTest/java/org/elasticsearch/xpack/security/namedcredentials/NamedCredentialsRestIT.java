@@ -110,13 +110,11 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
         assertThat(created.evaluate("created"), equalTo(true));
 
         // Update returns created=false
-        var updated = assertOKAndCreateObjectPath(
-            client().performRequest(putRequest("it-servicenow", """
-                {
-                  "auth_type": "oauth_client_credentials",
-                  "url": "https://instance.service-now.com/v2"
-                }"""))
-        );
+        var updated = assertOKAndCreateObjectPath(client().performRequest(putRequest("it-servicenow", """
+            {
+              "auth_type": "oauth_client_credentials",
+              "url": "https://instance.service-now.com/v2"
+            }""")));
         assertThat(updated.evaluate("created"), equalTo(false));
 
         // GET redacts
