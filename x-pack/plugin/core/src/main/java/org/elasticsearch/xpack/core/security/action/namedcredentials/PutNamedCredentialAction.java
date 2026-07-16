@@ -8,16 +8,19 @@
 package org.elasticsearch.xpack.core.security.action.namedcredentials;
 
 import org.elasticsearch.action.ActionRequestValidationException;
+import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
 import org.elasticsearch.action.UntypedActionRequest;
 import org.elasticsearch.action.ValidateActions;
 import org.elasticsearch.action.support.TransportAction;
-import org.elasticsearch.action.support.master.AcknowledgedResponse;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
+import org.elasticsearch.xcontent.ToXContentObject;
+import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
@@ -35,7 +38,7 @@ import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstr
 public final class PutNamedCredentialAction {
 
     public static final String NAME = "cluster:admin/xpack/security/named_credentials/put";
-    public static final ActionType<AcknowledgedResponse> INSTANCE = new ActionType<>(NAME);
+    public static final ActionType<Response> INSTANCE = new ActionType<>(NAME);
 
     private PutNamedCredentialAction() {/* no instances */}
 
@@ -154,6 +157,38 @@ public final class PutNamedCredentialAction {
                 validationException = ValidateActions.addValidationError(error, validationException);
             }
             return validationException;
+        }
+
+        @Override
+        public void writeTo(StreamOutput out) throws IOException {
+            TransportAction.localOnly();
+        }
+    }
+
+    /** Response for PUT; {@code created} is {@code true} when the credential was newly created, {@code false} when replaced. */
+    public static final class Response extends ActionResponse implements ToXContentObject {
+
+        private final boolean created;
+
+        public Response(boolean created) {
+            this.created = created;
+        }
+
+        public boolean created() {
+            return created;
+        }
+
+        public RestStatus status() {
+            return created ? RestStatus.CREATED : RestStatus.OK;
+        }
+
+        @Override
+        public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
+            builder.startObject();
+            builder.field("acknowledged", true);
+            builder.field("created", created);
+            builder.endObject();
+            return builder;
         }
 
         @Override

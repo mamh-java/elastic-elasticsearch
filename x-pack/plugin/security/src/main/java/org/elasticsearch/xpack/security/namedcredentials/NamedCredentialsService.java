@@ -32,6 +32,8 @@ import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.sort.SortBuilders;
+import org.elasticsearch.search.sort.SortOrder;
 import org.elasticsearch.xcontent.ToXContent;
 import org.elasticsearch.xcontent.XContentFactory;
 import org.elasticsearch.xcontent.XContentParseException;
@@ -188,6 +190,7 @@ public class NamedCredentialsService {
             .setQuery(QueryBuilders.matchAllQuery())
             .setSize(MAX_CREDENTIALS)
             .setFetchSource(true)
+            .addSort(SortBuilders.fieldSort("_id").order(SortOrder.ASC))
             .request();
         indexState.checkIndexVersionThenExecute(
             listener::onFailure,
@@ -254,11 +257,14 @@ public class NamedCredentialsService {
             final NamedCredential redacted = credentialFromSource(name, source);
             final String authBlob = (String) source.get("auth");
             if (authBlob == null) {
-                throw new ElasticsearchStatusException(
-                    "named credential [{}] has no stored auth block",
-                    RestStatus.INTERNAL_SERVER_ERROR,
-                    name
+                listener.onFailure(
+                    new ElasticsearchStatusException(
+                        "named credential [{}] has no stored auth block",
+                        RestStatus.INTERNAL_SERVER_ERROR,
+                        name
+                    )
                 );
+                return;
             }
             final Map<String, String> auth = decryptAuth(encryption, authBlob);
             listener.onResponse(

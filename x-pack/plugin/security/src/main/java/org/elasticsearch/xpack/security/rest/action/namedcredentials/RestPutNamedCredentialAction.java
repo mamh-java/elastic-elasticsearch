@@ -57,6 +57,10 @@ public class RestPutNamedCredentialAction extends NamedCredentialsBaseRestHandle
         try (var parser = request.contentParser()) {
             req = PutNamedCredentialAction.Request.fromXContent(name, parser);
         }
-        return channel -> client.execute(PutNamedCredentialAction.INSTANCE, req, new RestToXContentListener<>(channel));
+        return channel -> client.execute(
+            PutNamedCredentialAction.INSTANCE,
+            req,
+            new RestToXContentListener<>(channel, PutNamedCredentialAction.Response::status)
+        );
     }
 }

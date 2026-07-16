@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.security.namedcredentials;
 
 import org.elasticsearch.client.Request;
 import org.elasticsearch.client.RequestOptions;
+import org.elasticsearch.client.Response;
 import org.elasticsearch.client.ResponseException;
 import org.elasticsearch.common.settings.SecureString;
 import org.elasticsearch.common.settings.Settings;
@@ -84,22 +85,39 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
         return request;
     }
 
-    /** The first PUT may race PEK generation (503 until the key exists); retry until it lands. */
-    private void putCredentialWaitingForKey(String name, String body) throws Exception {
+    /**
+     * The first PUT in each test may race PEK generation (503 until the key exists); retries until the key is available.
+     * Returns the parsed response body so callers can assert fields like {@code created}.
+     */
+    private org.elasticsearch.test.rest.ObjectPath putCredentialWaitingForKey(String name, String body) throws Exception {
+        final Response[] holder = new Response[1];
         assertBusy(() -> {
             var response = client().performRequest(putRequest(name, body));
             assertOK(response);
+            holder[0] = response;
         }, 60, TimeUnit.SECONDS);
+        return assertOKAndCreateObjectPath(holder[0]);
     }
 
     public void testCrudLifecycle() throws Exception {
-        putCredentialWaitingForKey("it-servicenow", """
+        var created = putCredentialWaitingForKey("it-servicenow", """
             {
               "auth_type": "oauth_client_credentials",
               "url": "https://instance.service-now.com",
               "config": { "token_url": "https://instance.service-now.com/oauth_token.do", "scope": "read write" },
               "auth": { "client_id": "my-client-id", "client_secret": "super-secret" }
             }""");
+        assertThat(created.evaluate("created"), equalTo(true));
+
+        // Update returns created=false
+        var updated = assertOKAndCreateObjectPath(
+            client().performRequest(putRequest("it-servicenow", """
+                {
+                  "auth_type": "oauth_client_credentials",
+                  "url": "https://instance.service-now.com/v2"
+                }"""))
+        );
+        assertThat(updated.evaluate("created"), equalTo(false));
 
         // GET redacts
         var get = assertOKAndCreateObjectPath(client().performRequest(new Request("GET", "/_security/named_credentials/it-servicenow")));

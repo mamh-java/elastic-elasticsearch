@@ -144,6 +144,7 @@ public class SecuritySystemIndices {
     }
 
     public SecurityIndexManager getProfileIndexManager() {
+        checkInitialized();
         return profileIndexManager;
     }
 

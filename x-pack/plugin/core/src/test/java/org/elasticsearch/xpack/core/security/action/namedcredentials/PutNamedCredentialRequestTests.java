@@ -8,6 +8,8 @@
 package org.elasticsearch.xpack.core.security.action.namedcredentials;
 
 import org.elasticsearch.action.ActionRequestValidationException;
+import org.elasticsearch.common.Strings;
+import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xcontent.XContentType;
@@ -109,5 +111,17 @@ public class PutNamedCredentialRequestTests extends ESTestCase {
             Map.of()
         );
         assertThat(request.validate(), notNullValue());
+    }
+
+    public void testResponseCreatedFlagAndStatus() throws IOException {
+        PutNamedCredentialAction.Response created = new PutNamedCredentialAction.Response(true);
+        assertThat(created.created(), is(true));
+        assertThat(created.status(), equalTo(RestStatus.CREATED));
+        assertThat(Strings.toString(created), containsString("\"created\":true"));
+
+        PutNamedCredentialAction.Response updated = new PutNamedCredentialAction.Response(false);
+        assertThat(updated.created(), is(false));
+        assertThat(updated.status(), equalTo(RestStatus.OK));
+        assertThat(Strings.toString(updated), containsString("\"created\":false"));
     }
 }
