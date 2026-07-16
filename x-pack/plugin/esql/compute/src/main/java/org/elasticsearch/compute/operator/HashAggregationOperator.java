@@ -19,7 +19,9 @@ import org.elasticsearch.compute.aggregation.GroupingAggregator;
 import org.elasticsearch.compute.aggregation.GroupingAggregatorEvaluationContext;
 import org.elasticsearch.compute.aggregation.GroupingAggregatorFunction;
 import org.elasticsearch.compute.aggregation.blockhash.BlockHash;
+import org.elasticsearch.compute.aggregation.blockhash.TimeBucketBlockHash;
 import org.elasticsearch.compute.data.Block;
+import org.elasticsearch.compute.data.ElementType;
 import org.elasticsearch.compute.data.IntArrayBlock;
 import org.elasticsearch.compute.data.IntBigArrayBlock;
 import org.elasticsearch.compute.data.IntVector;
@@ -280,13 +282,25 @@ public class HashAggregationOperator implements Operator {
             return new HashAggregationOperator(
                 aggregatorMode,
                 aggregators,
-                () -> wrapBlockHash(driverContext, BlockHash.build(groups, driverContext.blockFactory(), aggregationBatchSize, false)),
+                () -> wrapBlockHash(driverContext, buildBlockHash(driverContext)),
                 partialEmitKeysThreshold,
                 partialEmitUniquenessThreshold,
                 maxPageSize,
                 topAggregation,
                 driverContext
             );
+        }
+
+        private BlockHash buildBlockHash(DriverContext driverContext) {
+            // Use TimeBucketBlockHash for the (LONG timeBucket, BYTES_REF label...) shape produced
+            // by the coordinator-side aggregate of time-bucketed queries. Stores the label tuple once
+            // per distinct combination instead of re-copying it once per (timeBucket, labels) group.
+            if (groups.size() >= 2
+                && groups.get(0).elementType() == ElementType.LONG
+                && groups.subList(1, groups.size()).stream().allMatch(g -> g.elementType() == ElementType.BYTES_REF)) {
+                return new TimeBucketBlockHash(groups.get(0).channel(), groups.subList(1, groups.size()), driverContext.blockFactory());
+            }
+            return BlockHash.build(groups, driverContext.blockFactory(), aggregationBatchSize, false);
         }
 
         protected BlockHash wrapBlockHash(DriverContext driverContext, BlockHash hash) {

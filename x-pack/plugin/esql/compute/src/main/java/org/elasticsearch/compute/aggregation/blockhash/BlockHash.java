@@ -246,15 +246,6 @@ public abstract class BlockHash implements Releasable, SeenGroupIds {
                 }
             }
         }
-        // Routes (LONG timeBucket, BYTES_REF label...) to TimeBucketBlockHash, which stores the
-        // label tuple once per distinct combination (dictionary-encoded) rather than re-copying it
-        // once per distinct (timeBucket, label...) group. This is the coordinator-side shape for
-        // time-bucketed aggregates over keyword label columns. Label columns must be single-valued.
-        if (groups.size() >= 2
-            && groups.get(0).elementType() == ElementType.LONG
-            && groups.subList(1, groups.size()).stream().allMatch(g -> g.elementType() == ElementType.BYTES_REF)) {
-            return new TimeBucketBlockHash(groups.get(0).channel(), groups.subList(1, groups.size()), blockFactory);
-        }
         return new PackedValuesBlockHash(groups, blockFactory, emitBatchSize);
     }
 
