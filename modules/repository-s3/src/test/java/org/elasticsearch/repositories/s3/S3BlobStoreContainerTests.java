@@ -635,7 +635,7 @@ public class S3BlobStoreContainerTests extends ESTestCase {
             CompleteMultipartUploadResponse.builder().build()
         );
 
-        final ExecutorService executorService = Executors.newFixedThreadPool(nbParts);
+        final ExecutorService executorService = Executors.newFixedThreadPool(nbParts - 1);
         try {
             new S3BlobContainer(BlobPath.EMPTY, blobStore).writeBlobAtomic(
                 randomPurpose(),

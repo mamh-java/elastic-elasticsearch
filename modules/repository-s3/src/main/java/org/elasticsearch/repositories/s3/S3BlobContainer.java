@@ -403,6 +403,9 @@ class S3BlobContainer extends AbstractBlobContainer {
                 futureTasks.add(task);
                 executor.execute(task);
             }
+            // Have the current thread take any tasks not yet picked up by executor
+            // FutureTask.run() is a no-op if a task is already running or completed
+            futureTasks.forEach(FutureTask::run);
             final CompletedPart[] completedParts = new CompletedPart[nbParts];
             try {
                 for (int i = 0; i < nbParts; i++) {
