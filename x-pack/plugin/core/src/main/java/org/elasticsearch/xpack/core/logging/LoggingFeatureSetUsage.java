@@ -128,6 +128,7 @@ public class LoggingFeatureSetUsage extends XPackFeatureUsage {
 
     @Override
     protected void innerXContent(XContentBuilder builder, Params params) throws IOException {
+        super.innerXContent(builder, params);
         builder.field("querylog", queryConfig);
         builder.field("esql", esqlConfig);
     }
