@@ -74,11 +74,13 @@ public class EventDetector {
         this(MIN_SEGMENT_LENGTH, P_VALUE_THRESHOLD);
     }
 
-    public EventDetector(int minSegmentLength) {
+    // visible for testing
+    EventDetector(int minSegmentLength) {
         this(minSegmentLength, P_VALUE_THRESHOLD);
     }
 
-    public EventDetector(int minSegmentLength, double pValueThreshold) {
+    // visible for testing
+    EventDetector(int minSegmentLength, double pValueThreshold) {
         this.minSegmentLength = minSegmentLength;
         // Minimum variance regime in value-index units (at least two windows, to absorb the sliding-window
         // smear and keep the over-detection guard honest), converted to channel samples via the stride.
