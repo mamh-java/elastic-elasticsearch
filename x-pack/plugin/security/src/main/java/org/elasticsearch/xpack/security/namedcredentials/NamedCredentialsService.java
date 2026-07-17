@@ -54,6 +54,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static org.elasticsearch.xpack.core.ClientHelper.SECURITY_ORIGIN;
 import static org.elasticsearch.xpack.core.ClientHelper.executeAsyncWithOrigin;
@@ -71,19 +72,18 @@ public class NamedCredentialsService {
 
     private final Client client;
     private final SecurityIndexManager indexManager;
-    @Nullable
-    private final EncryptionService encryptionService;
+    private final Supplier<EncryptionService> encryptionServiceSupplier;
     private final Clock clock;
 
     public NamedCredentialsService(
         Client client,
         SecurityIndexManager indexManager,
-        @Nullable EncryptionService encryptionService,
+        Supplier<EncryptionService> encryptionServiceSupplier,
         Clock clock
     ) {
         this.client = client;
         this.indexManager = indexManager;
-        this.encryptionService = encryptionService;
+        this.encryptionServiceSupplier = encryptionServiceSupplier;
         this.clock = clock;
     }
 
@@ -354,16 +354,28 @@ public class NamedCredentialsService {
     }
 
     private <T> EncryptionService requireEncryptionService(ActionListener<T> listener) {
-        if (encryptionService == null) {
+        try {
+            EncryptionService service = encryptionServiceSupplier.get();
+            if (service == null) {
+                listener.onFailure(
+                    new ElasticsearchStatusException(
+                        "the encryption service is not available on this cluster; named credentials cannot be used",
+                        RestStatus.SERVICE_UNAVAILABLE
+                    )
+                );
+                return null;
+            }
+            return service;
+        } catch (IllegalStateException e) {
             listener.onFailure(
                 new ElasticsearchStatusException(
                     "the encryption service is not available on this cluster; named credentials cannot be used",
-                    RestStatus.SERVICE_UNAVAILABLE
+                    RestStatus.SERVICE_UNAVAILABLE,
+                    e
                 )
             );
             return null;
         }
-        return encryptionService;
     }
 
     // Visible for testing

@@ -865,7 +865,7 @@ public class Security extends Plugin
         final NamedCredentialsService namedCredentialsService = new NamedCredentialsService(
             client,
             systemIndices.getNamedCredentialsIndexManager(),
-            EncryptionServiceRegistry.getEncryptionService(),
+            EncryptionServiceRegistry::getEncryptionService,
             Clock.systemUTC()
         );
         components.add(namedCredentialsService);
