@@ -261,13 +261,16 @@ public class HashAggregationOperator implements Operator {
                 return new HashAggregationOperator(
                     aggregatorMode,
                     aggregators,
-                    () -> wrapBlockHash(driverContext,BlockHash.buildCategorizeBlockHash(
-                        groups,
-                        aggregatorMode,
-                        driverContext.blockFactory(),
-                        analysisRegistry,
-                        maxPageSize
-                    )),
+                    () -> wrapBlockHash(
+                        driverContext,
+                        BlockHash.buildCategorizeBlockHash(
+                            groups,
+                            aggregatorMode,
+                            driverContext.blockFactory(),
+                            analysisRegistry,
+                            maxPageSize
+                        )
+                    ),
                     Integer.MAX_VALUE, // disable partial emit for CATEGORIZE. it doesn't support it.
                     1.0,
                     Integer.MAX_VALUE, // disable splitting aggs pages for CATEGORIZE. it doesn't support it.
@@ -276,11 +279,14 @@ public class HashAggregationOperator implements Operator {
                 );
             }
 
-            if(groups.getFirst().timeBucket()) {
+            if (groups.getFirst().timeBucket()) {
                 return new HashAggregationOperator(
                     aggregatorMode,
                     aggregators,
-                    () -> wrapBlockHash(driverContext, new TimeBucketBlockHash(groups.getFirst().channel(), groups.subList(1, groups.size()), driverContext.blockFactory())),
+                    () -> wrapBlockHash(
+                        driverContext,
+                        new TimeBucketBlockHash(groups.getFirst().channel(), groups.subList(1, groups.size()), driverContext.blockFactory())
+                    ),
                     partialEmitKeysThreshold,
                     partialEmitUniquenessThreshold,
                     maxPageSize,
