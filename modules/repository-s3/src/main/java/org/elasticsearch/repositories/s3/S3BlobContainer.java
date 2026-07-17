@@ -444,12 +444,9 @@ class S3BlobContainer extends AbstractBlobContainer {
                 try {
                     abortMultiPartUpload(purpose, uploadId, absoluteBlobKey);
                 } catch (Exception abortException) {
-                    logger.warn(
-                        "failed to abort multipart upload of [{}] with ID [{}] after failure",
-                        absoluteBlobKey,
-                        uploadId,
-                        abortException
-                    );
+                    logger.atWarn()
+                        .withThrowable(abortException)
+                        .log("failed to abort multipart upload of [{}] with ID [{}] after failure", absoluteBlobKey, uploadId);
                 }
             }
         }
