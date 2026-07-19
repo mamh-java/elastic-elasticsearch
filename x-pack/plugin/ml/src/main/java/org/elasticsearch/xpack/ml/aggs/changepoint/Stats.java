@@ -526,11 +526,11 @@ public class Stats {
      * magnitude.
      */
     public static double[] asinhStabilize(double[] values, double scale) {
-        double s = scale > 0.0 ? scale : 1.0;
+        assert scale > 0.0 : "scale must be positive";
         int n = values.length;
         double[] out = new double[n];
         for (int i = 0; i < n; i++) {
-            out[i] = FastMath.asinh(values[i] / s);
+            out[i] = FastMath.asinh(values[i] / scale);
         }
         return out;
     }
