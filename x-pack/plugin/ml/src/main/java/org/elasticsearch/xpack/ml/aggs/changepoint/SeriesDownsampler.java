@@ -75,8 +75,10 @@ final class SeriesDownsampler {
                 }
                 bucketDocs += docCounts != null && i < docCounts.length ? docCounts[i] : 1L;
             }
-            // Using the centre index minimises the maximum location error of the change point in the downsampled series.
-            // The upshot is these samples are synthetic and
+            // Using the centre index minimises the maximum location error of detecting change points on the downsampled
+            // series. The upshot is these samples don't necessarily appear in the original series. However, since the
+            // values are only used to locate the change point to specific index and don't escape the analysis this is
+            // harmless.
             int centreIndex = a + (b - a) / 2;
 
             // Emit the two representative points in original-index order so the downsampled series stays temporal.
