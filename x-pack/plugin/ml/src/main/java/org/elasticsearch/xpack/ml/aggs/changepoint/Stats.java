@@ -40,35 +40,38 @@ public class Stats {
     private static final double SCALE_PRECISION_ULP_FACTOR = 32.0;
 
     public static double mean(double[] values) {
-        double sum = 0.0;
-        for (double v : values) {
-            sum += v;
-        }
-        return sum / Math.max(values.length, 1);
+        return meanRange(values, 0, values.length);
     }
 
-    /** Mean of {@code a} over {@code [start, end)}, clamped to the array bounds; 0 if the clamped range is empty. */
-    public static double meanRange(double[] a, int start, int end) {
+    /** Mean of {@code values} over {@code [start, end)}, clamped to the array bounds; 0 if the clamped range is empty. */
+    public static double meanRange(double[] values, int start, int end) {
         start = Math.max(0, start);
-        end = Math.min(a.length, end);
+        end = Math.min(values.length, end);
         if (end <= start) {
             return 0.0;
         }
         double sum = 0.0;
         for (int i = start; i < end; i++) {
-            sum += a[i];
+            sum += values[i];
         }
         return sum / (end - start);
     }
 
     public static double median(double[] values) {
-        if (values.length == 0) {
+        return medianRange(values, 0, values.length);
+    }
+
+    /** Median of {@code values} over {@code [start, end)}, clamped to the array bounds; 0 if the clamped range is empty. */
+    public static double medianRange(double[] values, int start, int end) {
+        start = Math.max(0, start);
+        end = Math.min(values.length, end);
+        if (end <= start) {
             return 0.0;
         }
-        int n = values.length;
-        double[] tmp = Arrays.copyOf(values, n);
-        Arrays.sort(tmp);
-        return n % 2 == 0 ? (tmp[n / 2 - 1] + tmp[n / 2]) / 2.0 : tmp[n / 2];
+        double[] window = Arrays.copyOfRange(values, start, end);
+        Arrays.sort(window);
+        int m = window.length;
+        return (m % 2 == 1) ? window[m / 2] : 0.5 * (window[m / 2 - 1] + window[m / 2]);
     }
 
     /** Linear-interpolation quantile of an already-sorted array. */

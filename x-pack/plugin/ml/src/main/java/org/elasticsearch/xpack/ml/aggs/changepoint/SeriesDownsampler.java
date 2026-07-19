@@ -38,13 +38,15 @@ final class SeriesDownsampler {
     private SeriesDownsampler() {}
 
     /**
-     * Returns a series with at most {@code maxSamples} points. If the input already fits (or the cap is too small to
-     * be meaningful) the input is returned unchanged.
+     * Returns a series with at most {@code maxSamples} points. If the input already fits the input is returned
+     * unchanged. Asserts the cap {@code maxSamples} is large enough to be meaningful.
      */
     static MlAggsHelper.DoubleBucketValues downsample(MlAggsHelper.DoubleBucketValues input, int maxSamples) {
+        assert maxSamples >= 2 * SAMPLES_PER_BUCKET : "Cap on maximum series length [" + maxSamples + "] is too small";
+
         double[] values = input.getValues();
         int n = values.length;
-        if (n <= maxSamples || maxSamples < 2 * SAMPLES_PER_BUCKET) {
+        if (n <= maxSamples) {
             return input;
         }
 
@@ -60,36 +62,38 @@ final class SeriesDownsampler {
 
         for (int a = 0; a < n; a += bucketWidth) {
             int b = Math.min(n, a + bucketWidth);
-            double center = median(values, a, b);
+            double centre = Stats.medianRange(values, a, b);
 
             int extremeIndex = a;
-            double bestDeviation = -1.0;
+            double maxDeviation = -1.0;
             long bucketDocs = 0L;
             for (int i = a; i < b; i++) {
-                double deviation = Math.abs(values[i] - center);
-                if (deviation > bestDeviation) {
-                    bestDeviation = deviation;
+                double deviation = Math.abs(values[i] - centre);
+                if (deviation > maxDeviation) {
+                    maxDeviation = deviation;
                     extremeIndex = i;
                 }
                 bucketDocs += docCounts != null && i < docCounts.length ? docCounts[i] : 1L;
             }
-            int centerIndex = a + (b - a) / 2;
+            // Using the centre index minimises the maximum location error of the change point in the downsampled series.
+            // The upshot is these samples are synthetic and
+            int centreIndex = a + (b - a) / 2;
 
             // Emit the two representative points in original-index order so the downsampled series stays temporal.
             int firstIndex;
             double firstValue;
             int secondIndex;
             double secondValue;
-            if (centerIndex <= extremeIndex) {
-                firstIndex = centerIndex;
-                firstValue = center;
+            if (centreIndex <= extremeIndex) {
+                firstIndex = centreIndex;
+                firstValue = centre;
                 secondIndex = extremeIndex;
                 secondValue = values[extremeIndex];
             } else {
                 firstIndex = extremeIndex;
                 firstValue = values[extremeIndex];
-                secondIndex = centerIndex;
-                secondValue = center;
+                secondIndex = centreIndex;
+                secondValue = centre;
             }
 
             outValues[k] = firstValue;
@@ -106,15 +110,5 @@ final class SeriesDownsampler {
         }
 
         return new MlAggsHelper.DoubleBucketValues(Arrays.copyOf(outDocs, k), Arrays.copyOf(outValues, k), Arrays.copyOf(outBuckets, k));
-    }
-
-    private static double median(double[] values, int start, int end) {
-        double[] window = Arrays.copyOfRange(values, start, end);
-        Arrays.sort(window);
-        int m = window.length;
-        if (m == 0) {
-            return 0.0;
-        }
-        return (m % 2 == 1) ? window[m / 2] : 0.5 * (window[m / 2 - 1] + window[m / 2]);
     }
 }
