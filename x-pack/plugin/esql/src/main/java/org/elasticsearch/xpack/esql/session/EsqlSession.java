@@ -112,10 +112,11 @@ import org.elasticsearch.xpack.esql.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.esql.plan.logical.Row;
 import org.elasticsearch.xpack.esql.plan.logical.UnresolvedIpLocation;
 import org.elasticsearch.xpack.esql.plan.logical.UnresolvedRelation;
-import org.elasticsearch.xpack.esql.plan.logical.join.AbstractSubqueryJoin;
+import org.elasticsearch.xpack.esql.plan.logical.join.AbstractHashJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.InlineJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.LookupJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.StubRelation;
+import org.elasticsearch.xpack.esql.plan.logical.join.SubqueryHashJoin;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalRelation;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalSupplier;
 import org.elasticsearch.xpack.esql.plan.logical.promql.PromqlCommand;
@@ -931,24 +932,26 @@ public class EsqlSession {
         // are resolved before outer ones that depend on them.
         LogicalPlan firstJoin = findFirstSubPlanJoin(mainPlan, subPlansResults);
 
-        if (firstJoin instanceof AbstractSubqueryJoin) {
-            AbstractSubqueryJoin.LogicalPlanTuple semiJoinTuple = AbstractSubqueryJoin.firstSubPlan(mainPlan, subPlansResults);
-            if (semiJoinTuple != null) {
+        if (firstJoin instanceof AbstractHashJoin) {
+            AbstractHashJoin.LogicalPlanTuple hashJoinTuple = AbstractHashJoin.firstSubPlan(mainPlan, subPlansResults);
+            if (hashJoinTuple != null) {
                 AtomicReference<Page> localRelationPage = new AtomicReference<>();
-                subPlanAndCallback = new SubPlanAndCallback(semiJoinTuple.subPlan(), result -> {
-                    LocalRelation resultWrapper = resultToPlan(semiJoinTuple.subPlan().source(), result);
-                    // AbstractSubqueryJoin.inlineData may release this page eagerly (filter / empty paths) or swap
+                subPlanAndCallback = new SubPlanAndCallback(hashJoinTuple.subPlan(), result -> {
+                    LocalRelation resultWrapper = resultToPlan(hashJoinTuple.subPlan().source(), result);
+                    // SubqueryHashJoin.inlineData may release this page eagerly (filter / empty paths) or swap
                     // it for a smaller, breaker-tracked dedup page (hash-join path) so the cleanup
-                    // below releases the right one at end of main plan execution.
+                    // below releases the right one at end of main plan execution. EqJoin keeps the page as-is.
                     localRelationPage.set(resultWrapper.supplier().get());
                     subPlansResults.add(resultWrapper);
-                    return AbstractSubqueryJoin.newMainPlan(
+                    return AbstractHashJoin.newMainPlan(
                         mainPlan,
-                        semiJoinTuple,
+                        hashJoinTuple,
                         resultWrapper,
-                        resolveInSubqueryHashJoinThreshold(configuration),
-                        blockFactory,
-                        localRelationPage
+                        new AbstractHashJoin.MaterializationContext(
+                            resolveInSubqueryHashJoinThreshold(configuration),
+                            blockFactory,
+                            localRelationPage
+                        )
                     );
                 }, () -> releaseLocalRelationBlocks(localRelationPage), true);
             }
@@ -997,11 +1000,11 @@ public class EsqlSession {
             }
             // Whether checking the subquery join or InlineJoin first does not matter, the plan is processed bottom up, looking for
             // joins whose right child haven't been evaluated yet
-            if (p instanceof AbstractSubqueryJoin sj) {
-                if (sj.right() instanceof LocalRelation lr && subPlansResults.contains(lr)) {
+            if (p instanceof AbstractHashJoin hj) {
+                if (hj.right() instanceof LocalRelation lr && subPlansResults.contains(lr)) {
                     return; // already processed
                 }
-                result.set(sj);
+                result.set(hj);
             } else if (p instanceof InlineJoin ij) {
                 if (ij.right().anyMatch(r -> r instanceof StubRelation)) {
                     result.set(ij);
@@ -1651,7 +1654,7 @@ public class EsqlSession {
      * Collects the clusters that feed rows into a plan node (a LOOKUP JOIN's left subtree, or an ENRICH's child) by walking
      * only the data-bearing spine of that subtree.
      * <p>
-     * For any {@link AbstractSubqueryJoin} (SEMI/ANTI/MARK) that {@code InSubqueryResolver} produces for {@code field IN (subquery)}, only
+     * For any {@link SubqueryHashJoin} (SEMI/ANTI/MARK) that {@code InSubqueryResolver} produces for {@code field IN (subquery)}, only
      * the left child carries rows into the subsequent plan; the right child does not contribute source clusters to this join.
      * So {@code ... | WHERE x IN (FROM remote:idx) | LOOKUP JOIN ...} scopes the lookup to the outer source only, not to {@code remote}.
      * A {@code FROM a, b} union ({@code Fork}/{@code UnionAll}) instead reads from every branch, so all of its children are followed.
@@ -1671,7 +1674,7 @@ public class EsqlSession {
                 }
             }
             case Row row -> scope.add(RemoteClusterAware.LOCAL_CLUSTER_GROUP_KEY);
-            case AbstractSubqueryJoin subqueryJoin -> collectSourceClusterScope(subqueryJoin.left(), scope, indexResolution);
+            case SubqueryHashJoin subqueryJoin -> collectSourceClusterScope(subqueryJoin.left(), scope, indexResolution);
             default -> {
                 for (LogicalPlan child : plan.children()) {
                     collectSourceClusterScope(child, scope, indexResolution);

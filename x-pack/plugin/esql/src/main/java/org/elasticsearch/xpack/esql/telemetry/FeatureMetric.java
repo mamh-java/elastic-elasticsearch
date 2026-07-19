@@ -53,8 +53,8 @@ import org.elasticsearch.xpack.esql.plan.logical.fuse.Fuse;
 import org.elasticsearch.xpack.esql.plan.logical.fuse.FuseScoreEval;
 import org.elasticsearch.xpack.esql.plan.logical.inference.Completion;
 import org.elasticsearch.xpack.esql.plan.logical.inference.Rerank;
-import org.elasticsearch.xpack.esql.plan.logical.join.AbstractSubqueryJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.LookupJoin;
+import org.elasticsearch.xpack.esql.plan.logical.join.SubqueryHashJoin;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalRelation;
 import org.elasticsearch.xpack.esql.plan.logical.promql.PromqlCommand;
 import org.elasticsearch.xpack.esql.plan.logical.show.ShowInfo;
@@ -91,7 +91,7 @@ public enum FeatureMetric {
     STATS(plan -> false),
     // SemiJoin/AntiJoin/MarkJoin only originate from `WHERE x IN (sub)` (rewritten by InSubqueryResolver),
     // so seeing one in the plan implies the user wrote a WHERE clause — count it for WHERE.
-    WHERE(plan -> plan instanceof Filter || plan instanceof AbstractSubqueryJoin),
+    WHERE(plan -> plan instanceof Filter || plan instanceof SubqueryHashJoin),
     ENRICH(Enrich.class::isInstance),
     EXPLAIN(Explain.class::isInstance),
     MV_EXPAND(MvExpand.class::isInstance),
