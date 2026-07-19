@@ -39,9 +39,9 @@ import org.elasticsearch.xpack.esql.plan.logical.Project;
 import org.elasticsearch.xpack.esql.plan.logical.Row;
 import org.elasticsearch.xpack.esql.plan.logical.UnaryPlan;
 import org.elasticsearch.xpack.esql.plan.logical.UnionAll;
-import org.elasticsearch.xpack.esql.plan.logical.join.AbstractSubqueryJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.Join;
 import org.elasticsearch.xpack.esql.plan.logical.join.LookupJoin;
+import org.elasticsearch.xpack.esql.plan.logical.join.SubqueryHashJoin;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalRelation;
 import org.elasticsearch.xpack.esql.plan.logical.promql.PromqlCommand;
 
@@ -428,7 +428,7 @@ public class ResolveUnmapped extends AnalyzerRules.ParameterizedAnalyzerRule<Log
                 });
             }
             // Unresolved right keys are intentionally ignored — a query that references them is invalid and will fail verification.
-        } else if (node instanceof AbstractSubqueryJoin sj) {
+        } else if (node instanceof SubqueryHashJoin sj) {
             // RHS surfaces the same single-column name, so the generic else-branch would mask an unmapped IN left key. #142033
             collectUnresolvedLeftKeys(sj, new HashSet<>(Expressions.names(sj.left().output())), sink);
         } else {

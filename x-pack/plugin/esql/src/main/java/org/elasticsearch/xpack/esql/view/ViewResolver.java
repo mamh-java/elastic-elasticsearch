@@ -39,7 +39,7 @@ import org.elasticsearch.xpack.esql.plan.logical.Subquery;
 import org.elasticsearch.xpack.esql.plan.logical.UnresolvedRelation;
 import org.elasticsearch.xpack.esql.plan.logical.ViewShadowRelation;
 import org.elasticsearch.xpack.esql.plan.logical.ViewUnionAll;
-import org.elasticsearch.xpack.esql.plan.logical.join.AbstractSubqueryJoin;
+import org.elasticsearch.xpack.esql.plan.logical.join.SubqueryHashJoin;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -72,7 +72,7 @@ import static org.elasticsearch.rest.RestUtils.REST_MASTER_TIMEOUT_DEFAULT;
  *       plans</li>
  *   <li>{@link Fork}: Recursively processes each child branch</li>
  *   <li>{@code UnionAll}: Skipped (assumes rewriting is already complete)</li>
- *   <li>{@link AbstractSubqueryJoin}: Recursively processes the left and right sides</li>
+ *   <li>{@link SubqueryHashJoin}: Recursively processes the left and right sides</li>
  *   <li>{@link Filter}: Calls {@link InSubqueryResolver} to expand any {@code InSubquery} into a {@code SemiJoin}/{@code AntiJoin}/
  *       {@code MarkJoin}, then recurses into the newly created subquery plans to resolve view references nested there</li>
  *   <li>{@link ViewUnionAll}: Skipped (already the result of view resolution)</li>
@@ -268,7 +268,7 @@ public class ViewResolver {
                         );
                     }
                 }
-                case AbstractSubqueryJoin subqueryJoin -> replaceViewsSubqueryJoin(
+                case SubqueryHashJoin subqueryJoin -> replaceViewsSubqueryJoin(
                     subqueryJoin,
                     projectRouting,
                     parser,
@@ -354,7 +354,7 @@ public class ViewResolver {
     }
 
     private void replaceViewsSubqueryJoin(
-        AbstractSubqueryJoin subqueryJoin,
+        SubqueryHashJoin subqueryJoin,
         String projectRouting,
         BiFunction<String, String, LogicalPlan> parser,
         LinkedHashSet<String> seenViews,

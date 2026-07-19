@@ -44,15 +44,15 @@ import java.util.Objects;
  * {@code OR}/{@code AND}/{@code NOT} operators are evaluated by the standard expression machinery.
  * <p>
  * Like {@link SemiJoin}, the right side is an independent subquery executed first; once its result arrives as a {@link LocalRelation},
- * {@link AbstractSubqueryJoin#inlineData} routes the dedup result into the {@link #buildFilterPathPlan} / {@link #buildHashJoinPathPlan}
+ * {@link SubqueryHashJoin#inlineData} routes the dedup result into the {@link #buildFilterPathPlan} / {@link #buildHashJoinPathPlan}
  * hooks, which substitute an {@link Eval} that materializes the mark.
  */
-public class MarkJoin extends AbstractSubqueryJoin {
+public class MarkJoin extends SubqueryHashJoin {
 
     /**
      * Mark attribute exposed by this join. The surrounding {@link Filter} condition references it (placed there by
      * {@link org.elasticsearch.xpack.esql.analysis.InSubqueryResolver} as the substitute for the original {@code InSubquery}).
-     * When {@link AbstractSubqueryJoin#inlineData} converts this node into an {@link Eval}, the {@link Alias} it produces shares this
+     * When {@link SubqueryHashJoin#inlineData} converts this node into an {@link Eval}, the {@link Alias} it produces shares this
      * attribute's {@link org.elasticsearch.xpack.esql.core.expression.NameId} so existing references resolve.
      */
     private final Attribute markAttribute;
@@ -138,7 +138,7 @@ public class MarkJoin extends AbstractSubqueryJoin {
         Source source,
         boolean rightHadNulls
     ) {
-        // LEFT join → Eval($mark = CASE …) → Project(original left output + mark). {@link AbstractSubqueryJoin#inlineAsHashJoin} has
+        // LEFT join → Eval($mark = CASE …) → Project(original left output + mark). {@link SubqueryHashJoin#inlineAsHashJoin} has
         // already wrapped the left side in an {@code Eval(svKey = MvSingleValueOrNull(leftField))} so multi-valued positions become
         // NULL before the join. {@code leftJoinConfig.leftFields()} therefore refers to the SV-guarded attribute, which we use in the
         // CASE so NULL/MV keys collapse to mark=NULL.

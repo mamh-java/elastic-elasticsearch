@@ -61,7 +61,7 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 
 /**
- * Unit tests for {@link AbstractSubqueryJoin} static methods (inlineData, firstSubPlan, newMainPlan)
+ * Unit tests for {@link SubqueryHashJoin} static methods (inlineData, firstSubPlan, newMainPlan)
  * exercised through its {@link SemiJoin} / {@link AntiJoin} / {@link MarkJoin} subclasses.
  */
 public class SubqueryJoinTests extends ESTestCase {
@@ -81,7 +81,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block[] blocks = new Block[] { intBlock(1, 2, 3) };
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(blocks)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         var filter = as(inlined, Filter.class);
         var inExpr = as(filter.condition(), In.class);
         assertThat(inExpr.value(), equalTo(leftField));
@@ -104,7 +104,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block[] blocks = new Block[] { BlockUtils.constantBlock(TestBlockFactory.getNonBreakingInstance(), 10, count) };
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(blocks)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         var filter = as(inlined, Filter.class);
         var inExpr = as(filter.condition(), In.class);
         assertThat(inExpr.list().size(), equalTo(1));
@@ -119,7 +119,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block[] blocks = new Block[] { BlockUtils.constantBlock(TestBlockFactory.getNonBreakingInstance(), 10, 2) };
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(blocks)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(antiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(antiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         var filter = as(inlined, Filter.class);
         var not = as(filter.condition(), Not.class);
         as(not.field(), In.class);
@@ -133,12 +133,12 @@ public class SubqueryJoinTests extends ESTestCase {
 
         // SEMI with empty result -> FALSE
         SemiJoin semiJoin = semiJoin(leftField, rightField);
-        var inlined = as(AbstractSubqueryJoin.inlineData(semiJoin, emptyResult, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null), Filter.class);
+        var inlined = as(SubqueryHashJoin.inlineData(semiJoin, emptyResult, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null), Filter.class);
         assertThat(inlined.condition(), equalTo(Literal.FALSE));
 
         // ANTI with empty result -> TRUE
         AntiJoin antiJoin = antiJoin(leftField, rightField);
-        inlined = as(AbstractSubqueryJoin.inlineData(antiJoin, emptyResult, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null), Filter.class);
+        inlined = as(SubqueryHashJoin.inlineData(antiJoin, emptyResult, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null), Filter.class);
         assertThat(inlined.condition(), equalTo(Literal.TRUE));
     }
 
@@ -155,7 +155,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block[] blocks = new Block[] { distinctIntBlock(count) };
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(blocks)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
 
         var project = as(inlined, Project.class);
         var filter = as(project.child(), Filter.class);
@@ -174,7 +174,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block[] blocks = new Block[] { distinctIntBlock(count) };
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(blocks)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(antiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(antiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
 
         var project = as(inlined, Project.class);
         var filter = as(project.child(), Filter.class);
@@ -193,7 +193,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block[] blocks = new Block[] { distinctIntBlock(HASH_JOIN_THRESHOLD) };
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(blocks)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
 
         var filter = as(inlined, Filter.class);
         var inExpr = as(filter.condition(), In.class);
@@ -246,7 +246,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockWithNulls(new int[] { 10, 0, 20 }, new boolean[] { false, true, false });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(antiJoin, result, 0, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(antiJoin, result, 0, BLOCK_FACTORY, null);
         Filter filter = as(inlined, Filter.class);
         assertThat(filter.condition(), equalTo(Literal.FALSE));
     }
@@ -263,7 +263,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockWithNulls(new int[] { 0, 0 }, new boolean[] { true, true });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, null);
         Filter filter = as(inlined, Filter.class);
         assertThat(filter.condition(), equalTo(Literal.FALSE));
     }
@@ -285,7 +285,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlock(10, 20, 30);
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, null);
         Project project = as(inlined, Project.class);
         Filter sentinelFilter = as(project.child(), Filter.class);
         Join join = as(sentinelFilter.child(), Join.class);
@@ -316,7 +316,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlock(10, 20);
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(antiJoin, result, 0, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(antiJoin, result, 0, BLOCK_FACTORY, null);
         Project project = as(inlined, Project.class);
         Filter sentinelFilter = as(project.child(), Filter.class);
         as(sentinelFilter.condition(), IsNull.class);
@@ -476,7 +476,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlock(1, 2, 3);
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, null);
         Project project = as(inlined, Project.class);
         // Project preserves the left-side output only (no sentinel, no right-side key).
         for (var ne : project.projections()) {
@@ -508,7 +508,7 @@ public class SubqueryJoinTests extends ESTestCase {
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(sourcePage));
 
         java.util.concurrent.atomic.AtomicReference<Page> pageHolder = new java.util.concurrent.atomic.AtomicReference<>(sourcePage);
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, pageHolder);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, 0, BLOCK_FACTORY, pageHolder);
 
         Project project = as(inlined, Project.class);
         Filter filter = as(project.child(), Filter.class);
@@ -535,7 +535,7 @@ public class SubqueryJoinTests extends ESTestCase {
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(sourcePage));
 
         java.util.concurrent.atomic.AtomicReference<Page> pageHolder = new java.util.concurrent.atomic.AtomicReference<>(sourcePage);
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, pageHolder);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, pageHolder);
 
         as(inlined, Filter.class);
         assertThat("pageHolder should be cleared after filter path consumed the page", pageHolder.get(), nullValue());
@@ -568,7 +568,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockWithNulls(new int[] { 10, 0, 20 }, new boolean[] { false, true, false });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Filter filter = as(inlined, Filter.class);
         In inExpr = as(filter.condition(), In.class);
         assertThat("two distinct values + one NULL literal", inExpr.list(), hasSize(3));
@@ -588,7 +588,7 @@ public class SubqueryJoinTests extends ESTestCase {
     }
 
     /**
-     * SEMI filter path with a multi-valued position on the right: {@code AbstractSubqueryJoin#convertMvPositionsToNull}
+     * SEMI filter path with a multi-valued position on the right: {@code SubqueryHashJoin#convertMvPositionsToNull}
      * folds the MV to NULL before BlockHash, so the MV's element values ({@code 20, 30} here) are
      * <strong>not</strong> matchable — the dedup output carries the MV as a single NULL position,
      * mirroring the left-side {@code MvSingleValueOrNull} guard. This is the core right-side
@@ -603,7 +603,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockMv(new int[] { 10 }, new int[] { 20, 30 }, new int[] { 40 });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Filter filter = as(inlined, Filter.class);
         In inExpr = as(filter.condition(), In.class);
         assertThat("MV folds to a single NULL, not to its expanded values", inExpr.list(), hasSize(3));
@@ -640,7 +640,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockMv(new int[] { 10 }, null, new int[] { 20, 30 }, null, new int[] { 40 }, new int[] { 50, 60 });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Filter filter = as(inlined, Filter.class);
         In inExpr = as(filter.condition(), In.class);
         assertThat(inExpr.list(), hasSize(3));
@@ -660,10 +660,10 @@ public class SubqueryJoinTests extends ESTestCase {
     }
 
     /**
-     * SEMI when every right position is multi-valued: {@code AbstractSubqueryJoin#convertMvPositionsToNull}
+     * SEMI when every right position is multi-valued: {@code SubqueryHashJoin#convertMvPositionsToNull}
      * folds every position to NULL, BlockHash emits exactly one NULL group, and the post-dedup
      * "all right NULL" check ({@code dedupPositions == 1 && rightHadNulls}) fires the
-     * {@code AbstractSubqueryJoin#buildShortCircuitPlan} branch, returning {@code Filter(FALSE)} without ever
+     * {@code SubqueryHashJoin#buildShortCircuitPlan} branch, returning {@code Filter(FALSE)} without ever
      * constructing an {@link In} or a LEFT join.
      */
     public void testInlineDataAllMvRightShortCircuitsToFalseForSemi() {
@@ -674,14 +674,14 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockMv(new int[] { 1, 2 }, new int[] { 3, 4 });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(semiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Filter filter = as(inlined, Filter.class);
         assertThat(filter.condition(), equalTo(Literal.FALSE));
     }
 
     /**
      * ANTI: {@code shortCircuitOnAnyRightNull()} is true, so any NULL position in the dedup
-     * output (including one produced from an MV input via {@code AbstractSubqueryJoin#convertMvPositionsToNull})
+     * output (including one produced from an MV input via {@code SubqueryHashJoin#convertMvPositionsToNull})
      * forces a {@code Filter(FALSE)} short-circuit. This mirrors {@code x NOT IN (..., NULL, ...)}
      * semantics — never TRUE for any row.
      */
@@ -694,14 +694,14 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockMv(new int[] { 10 }, new int[] { 20, 30 });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(antiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(antiJoin, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Filter filter = as(inlined, Filter.class);
         assertThat(filter.condition(), equalTo(Literal.FALSE));
     }
 
     /**
-     * Hash-join path: the MV-derived NULL produced by {@code AbstractSubqueryJoin#convertMvPositionsToNull}
-     * surfaces at index 0 of the dedup output, then {@code AbstractSubqueryJoin#stripFirstPosition} drops it
+     * Hash-join path: the MV-derived NULL produced by {@code SubqueryHashJoin#convertMvPositionsToNull}
+     * surfaces at index 0 of the dedup output, then {@code SubqueryHashJoin#stripFirstPosition} drops it
      * before constructing the right-side {@link LocalRelation}. The dedup page handed to the LEFT
      * join therefore has no NULL key — important because the runtime BlockHash would otherwise
      * route a NULL left key to that same NULL group and produce {@code null = null} matches.
@@ -749,7 +749,7 @@ public class SubqueryJoinTests extends ESTestCase {
         MarkJoin mj = markJoin(leftField, rightField);
         LocalRelation emptyResult = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(0)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(mj, emptyResult, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(mj, emptyResult, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Eval eval = as(inlined, Eval.class);
         Alias markAlias = singleMarkAlias(eval, mj);
         assertThat("mark is FALSE for empty subquery", markAlias.child(), equalTo(Literal.FALSE));
@@ -770,7 +770,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockWithNulls(new int[] { 0, 0 }, new boolean[] { true, true });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Eval eval = as(inlined, Eval.class);
         Alias markAlias = singleMarkAlias(eval, mj);
         Literal nullLit = as(markAlias.child(), Literal.class);
@@ -794,7 +794,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlock(1, 2, 3);
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Eval eval = as(inlined, Eval.class);
         In in = as(singleMarkAlias(eval, mj).child(), In.class);
         assertThat(in.value(), equalTo(leftField));
@@ -825,7 +825,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Block keyBlock = intBlockWithNulls(new int[] { 10, 0, 20 }, new boolean[] { false, true, false });
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(keyBlock)));
 
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Eval eval = as(inlined, Eval.class);
         In in = as(singleMarkAlias(eval, mj).child(), In.class);
         assertThat(in.value(), equalTo(leftField));
@@ -926,13 +926,13 @@ public class SubqueryJoinTests extends ESTestCase {
             List.of(rightField)
         );
 
-        var subPlan = AbstractSubqueryJoin.firstSubPlan(semiJoin, new HashSet<>());
+        var subPlan = AbstractHashJoin.firstSubPlan(semiJoin, new HashSet<>());
         assertThat(subPlan, notNullValue());
     }
 
     public void testFirstSubPlanReturnsNullWithNoSemiJoin() {
         LogicalPlan plan = emptyLocalRelation(List.of(getFieldAttribute("x", DataType.INTEGER)));
-        var subPlan = AbstractSubqueryJoin.firstSubPlan(plan, new HashSet<>());
+        var subPlan = AbstractHashJoin.firstSubPlan(plan, new HashSet<>());
         assertThat(subPlan, nullValue());
     }
 
@@ -957,7 +957,7 @@ public class SubqueryJoinTests extends ESTestCase {
         Set<LocalRelation> subPlansResults = new HashSet<>();
         subPlansResults.add(alreadyProcessed);
 
-        var subPlan = AbstractSubqueryJoin.firstSubPlan(semiJoin, subPlansResults);
+        var subPlan = AbstractHashJoin.firstSubPlan(semiJoin, subPlansResults);
         assertThat(subPlan, nullValue());
     }
 
@@ -976,13 +976,18 @@ public class SubqueryJoinTests extends ESTestCase {
             List.of(rightField)
         );
 
-        var subPlan = AbstractSubqueryJoin.firstSubPlan(semiJoin, new HashSet<>());
+        var subPlan = AbstractHashJoin.firstSubPlan(semiJoin, new HashSet<>());
         assertThat(subPlan, notNullValue());
 
         Block[] blocks = new Block[] { BlockUtils.constantBlock(TestBlockFactory.getNonBreakingInstance(), 42, 1) };
         LocalRelation result = new LocalRelation(Source.EMPTY, List.of(rightField), LocalSupplier.of(new Page(blocks)));
 
-        LogicalPlan newPlan = AbstractSubqueryJoin.newMainPlan(semiJoin, subPlan, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan newPlan = AbstractHashJoin.newMainPlan(
+            semiJoin,
+            subPlan,
+            result,
+            new AbstractHashJoin.MaterializationContext(HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null)
+        );
         var filter = as(newPlan, Filter.class);
         assertThat(filter.condition(), instanceOf(In.class));
     }
@@ -1042,7 +1047,7 @@ public class SubqueryJoinTests extends ESTestCase {
      * block and don't need to construct above-threshold data themselves.
      */
     private static Case assertHashJoinPathShape(MarkJoin mj, LocalRelation result) {
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(mj, result, HASH_JOIN_THRESHOLD, BLOCK_FACTORY, null);
         Project project = as(inlined, Project.class);
         boolean hasMarkAttr = project.projections().stream().anyMatch(ne -> ne.id().equals(mj.markAttribute().id()));
         assertTrue("projection must include the mark attribute", hasMarkAttr);
@@ -1092,9 +1097,9 @@ public class SubqueryJoinTests extends ESTestCase {
      * The expected sentinel-filter class is derived from whether the join is an {@link AntiJoin}:
      * {@link IsNotNull} for SEMI / MARK, {@link IsNull} for ANTI.
      */
-    private static Page extractHashJoinDedupPage(AbstractSubqueryJoin subqueryJoin, LocalRelation result, DataType expectedKeyType) {
+    private static Page extractHashJoinDedupPage(SubqueryHashJoin subqueryJoin, LocalRelation result, DataType expectedKeyType) {
         Class<? extends Expression> expectedSentinelCondition = subqueryJoin instanceof AntiJoin ? IsNull.class : IsNotNull.class;
-        LogicalPlan inlined = AbstractSubqueryJoin.inlineData(subqueryJoin, result, 0, BLOCK_FACTORY, null);
+        LogicalPlan inlined = SubqueryHashJoin.inlineData(subqueryJoin, result, 0, BLOCK_FACTORY, null);
         Project project = as(inlined, Project.class);
         Filter filter = as(project.child(), Filter.class);
         as(filter.condition(), expectedSentinelCondition);
