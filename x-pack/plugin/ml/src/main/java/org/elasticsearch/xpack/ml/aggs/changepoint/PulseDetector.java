@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.ml.aggs.changepoint;
 
+import org.apache.commons.math3.util.FastMath;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
@@ -154,7 +155,7 @@ public class PulseDetector {
         double logN = Math.log(n);
         List<ChangeType> pulses = new ArrayList<>();
         for (Excursion e : excursions) {
-            double stabilizedValue = Stats.asinh(values[e.peak()] / stabilizingScale);
+            double stabilizedValue = FastMath.asinh(values[e.peak()] / stabilizingScale);
             double logPValue = Math.min(
                 0.0,
                 Stats.kdeLogTailProbability(stabilizedValue, stabilizedBackground, bandwidth, e.sign()) + logN

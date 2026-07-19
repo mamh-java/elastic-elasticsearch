@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.ml.aggs.changepoint;
 
+import org.apache.commons.math3.util.FastMath;
 import org.elasticsearch.test.ESTestCase;
 
 import java.util.Random;
@@ -308,14 +309,10 @@ public class StatsTests extends ESTestCase {
     }
 
     public void testAsinhStabilizationFamily() {
-        assertEquals(0.0, Stats.asinh(0.0), 1e-12);
-        assertEquals("asinh(1) = ln(1 + sqrt(2))", 0.881373587, Stats.asinh(1.0), 1e-9);
-        assertEquals("asinh is odd", -Stats.asinh(1.0), Stats.asinh(-1.0), 1e-12);
-
         // asinhStabilize(x, s) = asinh(x / s), elementwise.
         double[] stabilized = Stats.asinhStabilize(new double[] { 3.0, -3.0 }, 3.0);
-        assertEquals(Stats.asinh(1.0), stabilized[0], 1e-12);
-        assertEquals(Stats.asinh(-1.0), stabilized[1], 1e-12);
+        assertEquals(FastMath.asinh(1.0), stabilized[0], 1e-12);
+        assertEquals(FastMath.asinh(-1.0), stabilized[1], 1e-12);
 
         // asinhScale is a robust spread (IQR / 1.349). For 1..9 the IQR is 7 - 3 = 4.
         assertEquals(4.0 / 1.349, Stats.asinhScale(new double[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }), 1e-9);

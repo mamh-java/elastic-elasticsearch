@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.ml.aggs.changepoint;
 
 import org.apache.commons.math3.special.Erf;
+import org.apache.commons.math3.util.FastMath;
 
 import java.util.Arrays;
 
@@ -80,6 +81,7 @@ public class Stats {
         if (n == 1) {
             return sorted[0];
         }
+        q = Math.max(0.0, Math.min(1.0, q));
         double pos = q * (n - 1);
         int lo = (int) Math.floor(pos);
         int hi = (int) Math.ceil(pos);
@@ -154,10 +156,7 @@ public class Stats {
             weightedSum += w * values[i];
             weightTotal += w;
         }
-        if (weightTotal <= 0.0) {
-            return 0.0;
-        }
-        return weightedSum / weightTotal;
+        return weightTotal <= 0.0 ? 0.0 : weightedSum / weightTotal;
     }
 
     /**
@@ -212,18 +211,23 @@ public class Stats {
         return Math.max(mad, residualNumericalScaleFloor(magnitude));
     }
 
-    /** Robust scale of residuals: 1.4826 * median(|r - median(r)|). */
-    private static double madScale(double[] residuals, int start, int end) {
+    /** Robust scale of {@code values}: 1.4826 * median(|r - median(r)|). */
+    private static double madScale(double[] values, int start, int end) {
+        start = Math.max(0, start);
+        end = Math.min(values.length, end);
+        if (end <= start) {
+            return 0.0;
+        }
         int n = end - start;
         double[] tmp = new double[n];
-        System.arraycopy(residuals, start, tmp, 0, n);
+        System.arraycopy(values, start, tmp, 0, n);
         Arrays.sort(tmp);
-        double med = tmp[n / 2];
+        double median = quantile(tmp, 0.5);
         for (int i = 0; i < n; i++) {
-            tmp[i] = Math.abs(residuals[start + i] - med);
+            tmp[i] = Math.abs(values[start + i] - median);
         }
         Arrays.sort(tmp);
-        return 1.4826 * tmp[n / 2];
+        return 1.4826 * quantile(tmp, 0.5);
     }
 
     /** Inter-decile scale: (Q90 - Q10) / 2.5631. */
@@ -365,10 +369,9 @@ public class Stats {
         if (n < 3) {
             return MIN_VARIANCE;
         }
-        int count = n - 1;
-        double[] diffs = new double[count];
-        for (int i = 0; i < count; i++) {
-            diffs[i] = values[start + i + 1] - values[start + i];
+        double[] diffs = new double[n - 1];
+        for (int i = 1; i < n; i++) {
+            diffs[i - 1] = values[start + i] - values[start + i - 1];
         }
         Arrays.sort(diffs);
         double sigma = Math.max(0.0, (quantile(diffs, 0.75) - quantile(diffs, 0.25)) / 1.349);
@@ -395,18 +398,12 @@ public class Stats {
         if (n < 3) {
             return MIN_VARIANCE;
         }
-
-        double[] absoluteDifferences = new double[n - 1];
+        double[] absDiffs = new double[n - 1];
         for (int i = 1; i < n; i++) {
-            absoluteDifferences[i - 1] = Math.abs(values[start + i] - values[start + i - 1]);
+            absDiffs[i - 1] = Math.abs(values[start + i] - values[start + i - 1]);
         }
-        Arrays.sort(absoluteDifferences);
-        double medianAbsoluteDifference = absoluteDifferences[absoluteDifferences.length / 2];
-        if (medianAbsoluteDifference <= 0.0) {
-            return MIN_VARIANCE;
-        }
-        double sigma = (1.4826 * medianAbsoluteDifference) / Math.sqrt(2.0);
-        return sigma * sigma;
+        double sigma = (1.4826 * median(absDiffs)) / Math.sqrt(2.0);
+        return Math.max(sigma * sigma, MIN_VARIANCE);
     }
 
     /**
@@ -430,11 +427,11 @@ public class Stats {
      * sharp transition residuals of a structured regime (those are clipped).
      */
     public static double kdeBandwidth(double[] background, double minBandwidth) {
-        int m = background.length;
-        if (m < 2) {
+        int n = background.length;
+        if (n < 2) {
             return Math.max(minBandwidth, 0.0);
         }
-        double[] sorted = Arrays.copyOf(background, m);
+        double[] sorted = Arrays.copyOf(background, n);
         Arrays.sort(sorted);
         double lo = quantile(sorted, WINSORIZE_ALPHA);
         double hi = quantile(sorted, 1.0 - WINSORIZE_ALPHA);
@@ -442,15 +439,15 @@ public class Stats {
         for (double x : background) {
             clippedSum += Math.min(Math.max(x, lo), hi);
         }
-        double clippedMean = clippedSum / m;
+        double clippedMean = clippedSum / n;
         double clippedVariance = 0.0;
         for (double x : background) {
             double d = Math.min(Math.max(x, lo), hi) - clippedMean;
             clippedVariance += d * d;
         }
-        clippedVariance /= (m - 1);
+        clippedVariance /= (n - 1);
         double spread = Math.sqrt(Math.max(clippedVariance, 0.0));
-        double bandwidth = SILVERMAN_FACTOR * spread * Math.pow(m, -0.2);
+        double bandwidth = SILVERMAN_FACTOR * spread * Math.pow(n, -0.2);
         return bandwidth > 0.0 ? bandwidth : Math.max(minBandwidth, 0.0);
     }
 
@@ -470,8 +467,8 @@ public class Stats {
      * change's log p-value.
      */
     public static double kdeLogTailProbability(double value, double[] background, double bandwidth, int sign) {
-        int m = background.length;
-        if (m == 0) {
+        int n = background.length;
+        if (n == 0) {
             return 0.0; // tail probability 1
         }
         if (bandwidth <= 0.0) {
@@ -482,13 +479,13 @@ public class Stats {
                 }
             }
             // Floor at half a count so a value beyond all of the background still has a finite log-tail.
-            return Math.log(Math.max(beyond, 0.5) / m);
+            return Math.log(Math.max(beyond, 0.5) / n);
         }
         double scale = bandwidth * Math.sqrt(2.0);
         double logHalf = Math.log(0.5);
-        double[] terms = new double[m];
+        double[] terms = new double[n];
         double maxTerm = Double.NEGATIVE_INFINITY;
-        for (int i = 0; i < m; i++) {
+        for (int i = 0; i < n; i++) {
             double arg = sign > 0 ? (value - background[i]) / scale : (background[i] - value) / scale;
             terms[i] = logHalf + logErfc(arg);
             if (terms[i] > maxTerm) {
@@ -499,7 +496,7 @@ public class Stats {
         for (double term : terms) {
             sum += Math.exp(term - maxTerm);
         }
-        return maxTerm + Math.log(sum) - Math.log(m);
+        return maxTerm + Math.log(sum) - Math.log(n);
     }
 
     /**
@@ -511,9 +508,6 @@ public class Stats {
      * {@code erfc(x) ~ exp(-x^2)/(x*sqrt(pi)) * (1 - 1/(2x^2) + 3/(4x^4))}.
      */
     public static double logErfc(double x) {
-        if (x <= 0.0) {
-            return Math.log(Erf.erfc(x)); // erfc(x) in [1, 2] here, so the direct log is safe
-        }
         double erfc = Erf.erfc(x);
         if (erfc > 1e-300) {
             return Math.log(erfc);
@@ -533,22 +527,12 @@ public class Stats {
      */
     public static double[] asinhStabilize(double[] values, double scale) {
         double s = scale > 0.0 ? scale : 1.0;
-        double[] out = new double[values.length];
-        for (int i = 0; i < values.length; i++) {
-            out[i] = asinh(values[i] / s);
+        int n = values.length;
+        double[] out = new double[n];
+        for (int i = 0; i < n; i++) {
+            out[i] = FastMath.asinh(values[i] / s);
         }
         return out;
-    }
-
-    /**
-     * asinh(x) = sign(x) * log(|x| + sqrt(x^2 + 1)); Java has no {@code Math.asinh}.
-     *
-     * Odd and stable for x less than 0.
-     */
-    public static double asinh(double x) {
-        double a = Math.abs(x);
-        double r = Math.log(a + Math.sqrt(a * a + 1.0));
-        return x < 0.0 ? -r : r;
     }
 
     /**
@@ -557,23 +541,22 @@ public class Stats {
      * 1.0, so the returned scale is always strictly positive.
      */
     public static double asinhScale(double[] values) {
-        int m = values.length;
-        if (m < 2) {
+        int n = values.length;
+        if (n < 2) {
             return 1.0;
         }
-        double[] sorted = Arrays.copyOf(values, m);
-        Arrays.sort(sorted);
-        double iqr = quantile(sorted, 0.75) - quantile(sorted, 0.25);
+        double[] tmp = Arrays.copyOf(values, n);
+        Arrays.sort(tmp);
+        double iqr = quantile(tmp, 0.75) - quantile(tmp, 0.25);
         if (iqr > 0.0) {
             return iqr / 1.349;
         }
-        double median = quantile(sorted, 0.5);
-        double[] deviations = new double[m];
-        for (int i = 0; i < m; i++) {
-            deviations[i] = Math.abs(values[i] - median);
+        double median = quantile(tmp, 0.5);
+        for (int i = 0; i < n; i++) {
+            tmp[i] = Math.abs(values[i] - median);
         }
-        Arrays.sort(deviations);
-        double mad = quantile(deviations, 0.5);
+        Arrays.sort(tmp);
+        double mad = quantile(tmp, 0.5);
         return mad > 0.0 ? mad / 0.6745 : 1.0;
     }
 }
