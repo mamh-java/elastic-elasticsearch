@@ -275,6 +275,12 @@ public class ChangePointOperator implements Operator {
         // ESQL has one (type, pvalue) pair per row, so we prefer the structural change over the
         // point anomaly (operationally more useful), breaking any remaining tie by the more
         // significant (smaller) p-value.
+        //
+        // TODO(issue #154364): this is to maintain backwards compatility. The plan is to migrate
+        // to additional configuration parameters. These will allow us to output p-values in log-space,
+        // output descriptions and output multiple coincident change points as multi-valued fields.
+        // At the same time we will unify the aggregation and ES|QL command to optionally output the
+        // single most significant change point or all significant change points.
         Map<Integer, ChangeType> byIndex = new LinkedHashMap<>();
         for (ChangeType changeType : changeTypes) {
             if (changeType.changePoint() != ChangeType.NO_CHANGE_POINT) {
