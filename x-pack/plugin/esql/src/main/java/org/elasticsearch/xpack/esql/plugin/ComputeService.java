@@ -31,6 +31,7 @@ import org.elasticsearch.compute.operator.exchange.ExchangeSink;
 import org.elasticsearch.compute.operator.exchange.ExchangeSinkHandler;
 import org.elasticsearch.compute.operator.exchange.ExchangeSourceHandler;
 import org.elasticsearch.compute.operator.topn.TopNOperator.InputOrdering;
+import org.elasticsearch.compute.querydsl.query.QueryWarnings;
 import org.elasticsearch.core.Assertions;
 import org.elasticsearch.core.RefCounted;
 import org.elasticsearch.core.Releasable;
@@ -1306,8 +1307,9 @@ public class ComputeService {
         PlanTimeProfile planTimeProfile,
         ActionListener<DriverCompletionInfo> listener
     ) {
+        QueryWarnings singleValueQueryWarnings = QueryWarnings.EMIT;
         var shardContexts = context.searchContexts()
-            .map(context.retainSearchContexts() ? ComputeSearchContext::newDetachedShardContext : ComputeSearchContext::shardContext);
+            .map(csc -> context.retainSearchContexts() ? csc.newDetachedShardContext() : csc.shardContext(singleValueQueryWarnings));
         LongSupplier directoryBytesRead = directoryBytesReadSupplier(searchService.getIndicesService());
         // Snapshot per-thread Lucene directory bytes counter so we can attribute planner-time I/O
         // (query rewriting, weight construction, SearchStats lookups, sort builders, etc.) that
@@ -1318,7 +1320,8 @@ public class ComputeService {
             shardContexts,
             searchService.getIndicesService().getAnalysis(),
             plannerSettings,
-            directoryBytesRead
+            directoryBytesRead,
+            singleValueQueryWarnings
         );
 
         try {

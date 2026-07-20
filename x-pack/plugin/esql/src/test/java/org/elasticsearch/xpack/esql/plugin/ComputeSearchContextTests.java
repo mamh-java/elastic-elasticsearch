@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.plugin;
 
+import org.elasticsearch.compute.querydsl.query.QueryWarnings;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.mapper.MapperServiceTestCase;
 import org.elasticsearch.search.internal.SearchContext;
@@ -21,7 +22,7 @@ public class ComputeSearchContextTests extends MapperServiceTestCase {
         MapperService mapperService = createMapperService(mapping(b -> b.startObject("k").field("type", "keyword").endObject()));
 
         SearchContext normalSearchContext = newSearchContext(mapperService);
-        ShardContext normalShardContext = new ComputeSearchContext(0, normalSearchContext).shardContext();
+        ShardContext normalShardContext = new ComputeSearchContext(0, normalSearchContext).shardContext(QueryWarnings.EMIT);
         normalShardContext.decRef();
         assertTrue(normalSearchContext.isClosed());
 
