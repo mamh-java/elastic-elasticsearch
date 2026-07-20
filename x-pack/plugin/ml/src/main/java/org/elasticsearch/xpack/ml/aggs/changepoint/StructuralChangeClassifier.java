@@ -69,7 +69,8 @@ public class StructuralChangeClassifier {
      * variance change the (coarser, conservatively-discounted) dispersion channel misses. Off for the dispersion
      * channel itself, where a "variance of the variance" change is meaningless.
      */
-    public StructuralChangeClassifier(
+    // visible for testing
+    StructuralChangeClassifier(
         int minSegmentLength,
         int maxDegree,
         double pValueThreshold,

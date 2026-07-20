@@ -60,11 +60,13 @@ public class StructuralChangeDetector {
     private final double betaMultiplier;
     private final StructuralChangeClassifier classifier;
 
-    public StructuralChangeDetector(int minSegmentLength, int classifierMaxDegree, double pValueThreshold) {
+    // visible for testing
+    StructuralChangeDetector(int minSegmentLength, int classifierMaxDegree, double pValueThreshold) {
         this(minSegmentLength, BETA_MULTIPLIER, classifierMaxDegree, pValueThreshold, 1.0, false);
     }
 
-    public StructuralChangeDetector(
+    // visible for testing
+    StructuralChangeDetector(
         int minSegmentLength,
         int classifierMaxDegree,
         double pValueThreshold,
@@ -81,7 +83,8 @@ public class StructuralChangeDetector {
      * @param detectVarianceShifts whether the verifier reports a variance-driven boundary as a distribution
      * change (on for the value channel, off for the dispersion channel).
      */
-    public StructuralChangeDetector(
+    // visible for testing
+    StructuralChangeDetector(
         int minSegmentLength,
         double betaMultiplier,
         int classifierMaxDegree,

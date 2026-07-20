@@ -7,10 +7,11 @@
 
 package org.elasticsearch.xpack.ml.aggs.changepoint;
 
-import org.apache.commons.math3.util.FastMath;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
+
+import org.apache.commons.math3.util.FastMath;
 
 import java.util.ArrayList;
 import java.util.Comparator;
