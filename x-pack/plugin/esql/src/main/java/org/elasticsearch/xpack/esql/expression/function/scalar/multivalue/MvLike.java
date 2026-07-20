@@ -55,9 +55,9 @@ public class MvLike extends MvRegexMatch {
         returnType = "boolean",
         briefSummary = "Checks if any value of a multivalue field matches a wildcard pattern.",
         description = "Returns `true` when any value yielded by `field` matches `pattern`, using the same wildcard syntax as "
-            + "<<esql-like-operators,`LIKE`>>. `LIKE` is a single-value scalar: applied to a multivalue field it emits a warning "
-            + "and returns `null`, so this is how you match a wildcard pattern against a multivalue field. A null or empty `field` "
-            + "returns `false`, and because the result is never null the predicate composes under `AND`/`OR`/`NOT`.",
+            + "`LIKE`. `LIKE` is a single-value scalar: applied to a multivalue field it emits a warning and returns `null`, so "
+            + "this is how you match a wildcard pattern against a multivalue field. A null or empty `field` returns `false`, and "
+            + "because the result is never null the predicate composes under `AND`/`OR`/`NOT`.",
         examples = {
             @Example(file = "string", tag = "mv_like"),
             @Example(
