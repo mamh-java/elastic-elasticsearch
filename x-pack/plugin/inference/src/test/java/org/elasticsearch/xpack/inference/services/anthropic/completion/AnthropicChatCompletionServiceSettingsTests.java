@@ -26,6 +26,7 @@ import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.elasticsearch.xpack.inference.services.ServiceUtils.createUri;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 
@@ -73,6 +74,23 @@ public class AnthropicChatCompletionServiceSettingsTests extends AbstractBWCWire
         assertThat(
             updatedServiceSettings,
             is(new AnthropicChatCompletionServiceSettings(INITIAL_TEST_MODEL_ID, url, new RateLimitSettings(TEST_RATE_LIMIT)))
+        );
+    }
+
+    public void testUpdateServiceSettings_UrlCannotBeChanged() {
+        var originalUrl = URI.create(TEST_URL);
+        var originalServiceSettings = new AnthropicChatCompletionServiceSettings(
+            INITIAL_TEST_MODEL_ID,
+            originalUrl,
+            new RateLimitSettings(INITIAL_TEST_RATE_LIMIT)
+        );
+        var updatedServiceSettings = originalServiceSettings.updateServiceSettings(
+            getServiceSettingsMap(TEST_MODEL_ID, TEST_RATE_LIMIT, "https://other.example.com/v1/messages")
+        );
+
+        assertThat(
+            updatedServiceSettings,
+            is(new AnthropicChatCompletionServiceSettings(INITIAL_TEST_MODEL_ID, originalUrl, new RateLimitSettings(TEST_RATE_LIMIT)))
         );
     }
 
@@ -170,34 +188,28 @@ public class AnthropicChatCompletionServiceSettingsTests extends AbstractBWCWire
 
     @Override
     protected AnthropicChatCompletionServiceSettings mutateInstance(AnthropicChatCompletionServiceSettings instance) throws IOException {
-        return switch (randomInt(2)) {
-            case 0 -> new AnthropicChatCompletionServiceSettings(
-                randomValueOtherThan(instance.modelId(), () -> randomAlphaOfLength(8)),
-                instance.url(),
-                instance.rateLimitSettings()
-            );
-            case 1 -> new AnthropicChatCompletionServiceSettings(
-                instance.modelId(),
-                randomValueOtherThan(
-                    instance.url(),
-                    () -> randomBoolean() ? null : URI.create("https://" + randomAlphaOfLength(8) + ".example.com")
-                ),
-                instance.rateLimitSettings()
-            );
-            default -> new AnthropicChatCompletionServiceSettings(
-                instance.modelId(),
-                instance.url(),
-                randomValueOtherThan(instance.rateLimitSettings(), RateLimitSettingsTests::createRandom)
-            );
-        };
+        var modelId = instance.modelId();
+        var url = instance.url();
+        var rateLimitSettings = instance.rateLimitSettings();
+        switch (randomIntBetween(0, 2)) {
+            case 0 -> modelId = randomValueOtherThan(modelId, () -> randomAlphaOfLength(8));
+            case 1 -> url = randomValueOtherThan(url, () -> randomBoolean() ? null : createUri("https://" + randomAlphaOfLength(8) + ".example"));
+            case 2 -> rateLimitSettings = randomValueOtherThan(rateLimitSettings, RateLimitSettingsTests::createRandom);
+            default -> throw new AssertionError("Illegal randomisation branch");
+        }
+        return new AnthropicChatCompletionServiceSettings(modelId, url, rateLimitSettings);
     }
 
     private static AnthropicChatCompletionServiceSettings createRandom() {
-        var url = randomBoolean() ? null : URI.create("https://" + randomAlphaOfLength(8) + ".example.com");
+        var url = randomBoolean() ? null : createUri("https://" + randomAlphaOfLength(8) + ".example");
         return new AnthropicChatCompletionServiceSettings(randomAlphaOfLength(8), url, RateLimitSettingsTests.createRandom());
     }
 
     public static Map<String, Object> getServiceSettingsMap(@Nullable String modelId, @Nullable Integer rateLimit) {
+        return getServiceSettingsMap(modelId, rateLimit, null);
+    }
+
+    public static Map<String, Object> getServiceSettingsMap(@Nullable String modelId, @Nullable Integer rateLimit, @Nullable String url) {
         var map = new HashMap<String, Object>();
 
         if (modelId != null) {
@@ -205,6 +217,9 @@ public class AnthropicChatCompletionServiceSettingsTests extends AbstractBWCWire
         }
         if (rateLimit != null) {
             map.put(RateLimitSettings.FIELD_NAME, new HashMap<>(Map.of(RateLimitSettings.REQUESTS_PER_MINUTE_FIELD, rateLimit)));
+        }
+        if (url != null) {
+            map.put(ServiceFields.URL, url);
         }
 
         return map;
