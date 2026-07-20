@@ -2977,6 +2977,17 @@ public class VerifierTests extends ESTestCase {
         defaultAnalyzer().error("FROM test | WHERE mv_in_range(salary, 1, 2, 5)", containsString("must be a map expression"));
     }
 
+    public void testMvLikePattern() {
+        defaultAnalyzer().query("FROM test | WHERE mv_like(first_name, \"Ann*\")");
+        // The pattern is compiled once at plan time, so it has to be a constant.
+        defaultAnalyzer().error(
+            "FROM test | WHERE mv_like(first_name, last_name)",
+            containsString("second argument of [mv_like(first_name, last_name)] must be a constant")
+        );
+        // A malformed pattern is an analysis-time error, not a planner crash.
+        defaultAnalyzer().error("FROM test | WHERE mv_like(first_name, \"foo\\\\\")", containsString("Invalid pattern"));
+    }
+
     public void testCategorizeOptionOutputFormat() {
         assumeTrue("categorize options must be enabled", EsqlCapabilities.Cap.CATEGORIZE_OPTIONS.isEnabled());
 

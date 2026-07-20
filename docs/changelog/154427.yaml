@@ -1,0 +1,6 @@
+pr: 154427
+summary: "Add `MV_LIKE`, any-value wildcard matching over multivalued fields"
+area: ES|QL
+type: feature
+issues:
+ - 154427

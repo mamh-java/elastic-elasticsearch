@@ -386,6 +386,7 @@ toc:
                   - file: esql/functions-operators/mv-functions/mv_intersection.md
                   - file: esql/functions-operators/mv-functions/mv_intersects.md
                   - file: esql/functions-operators/mv-functions/mv_last.md
+                  - file: esql/functions-operators/mv-functions/mv_like.md
                   - file: esql/functions-operators/mv-functions/mv_max.md
                   - file: esql/functions-operators/mv-functions/mv_median.md
                   - file: esql/functions-operators/mv-functions/mv_median_absolute_deviation.md

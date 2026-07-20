@@ -178,6 +178,7 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvInRa
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvIntersection;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvIntersects;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvLast;
+import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvLike;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvMax;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvMedian;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvMedianAbsoluteDeviation;
@@ -603,6 +604,7 @@ public class EsqlFunctionRegistry {
                 MvInRange.DEFINITION,
                 MvIntersection.DEFINITION,
                 MvLast.DEFINITION,
+                MvLike.DEFINITION,
                 MvMax.DEFINITION,
                 MvMedian.DEFINITION,
                 MvMedianAbsoluteDeviation.DEFINITION,

@@ -25,6 +25,7 @@ public class MvFunctionWritables {
             MvInRange.ENTRY,
             MvIntersection.ENTRY,
             MvLast.ENTRY,
+            MvLike.ENTRY,
             MvMax.ENTRY,
             MvMedian.ENTRY,
             MvMedianAbsoluteDeviation.ENTRY,

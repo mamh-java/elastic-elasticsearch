@@ -10,6 +10,7 @@
 * [`MV_INTERSECTION`](../../functions-operators/mv-functions/mv_intersection.md) {applies_to}`stack: preview 9.3` {applies_to}`serverless: preview`
 * [`MV_INTERSECTS`](../../functions-operators/mv-functions/mv_intersects.md) {applies_to}`stack: preview 9.4` {applies_to}`serverless: preview`
 * [`MV_LAST`](../../functions-operators/mv-functions/mv_last.md)
+* [`MV_LIKE`](../../functions-operators/mv-functions/mv_like.md)
 * [`MV_MAX`](../../functions-operators/mv-functions/mv_max.md)
 * [`MV_MEDIAN`](../../functions-operators/mv-functions/mv_median.md)
 * [`MV_MEDIAN_ABSOLUTE_DEVIATION`](../../functions-operators/mv-functions/mv_median_absolute_deviation.md)
