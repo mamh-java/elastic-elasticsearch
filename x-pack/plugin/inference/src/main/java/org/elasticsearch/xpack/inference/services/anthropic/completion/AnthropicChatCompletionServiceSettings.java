@@ -76,9 +76,7 @@ public class AnthropicChatCompletionServiceSettings extends FilteredXContentObje
 
     public AnthropicChatCompletionServiceSettings(StreamInput in) throws IOException {
         this.modelId = in.readString();
-        this.url = in.getTransportVersion().supports(ANTHROPIC_COMPLETION_URL_ADDED)
-            ? createOptionalUri(in.readOptionalString())
-            : null;
+        this.url = in.getTransportVersion().supports(ANTHROPIC_COMPLETION_URL_ADDED) ? createOptionalUri(in.readOptionalString()) : null;
         rateLimitSettings = new RateLimitSettings(in);
     }
 

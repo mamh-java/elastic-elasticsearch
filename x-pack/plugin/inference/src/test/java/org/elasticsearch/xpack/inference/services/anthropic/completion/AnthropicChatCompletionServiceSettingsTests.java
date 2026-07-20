@@ -178,7 +178,10 @@ public class AnthropicChatCompletionServiceSettingsTests extends AbstractBWCWire
             );
             case 1 -> new AnthropicChatCompletionServiceSettings(
                 instance.modelId(),
-                randomValueOtherThan(instance.url(), () -> randomBoolean() ? null : URI.create("https://" + randomAlphaOfLength(8) + ".example.com")),
+                randomValueOtherThan(
+                    instance.url(),
+                    () -> randomBoolean() ? null : URI.create("https://" + randomAlphaOfLength(8) + ".example.com")
+                ),
                 instance.rateLimitSettings()
             );
             default -> new AnthropicChatCompletionServiceSettings(
