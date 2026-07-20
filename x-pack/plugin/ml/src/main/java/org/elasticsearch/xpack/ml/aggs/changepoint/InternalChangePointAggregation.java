@@ -66,25 +66,9 @@ public class InternalChangePointAggregation extends InternalAggregation {
         } else {
             // Down-convert for an older peer: a single optional bucket plus exactly one (non-optional) change
             // type. The legacy reader always reads one change type, so we must never write "nothing".
-            out.writeOptionalWriteable(representativeBucket());
-            out.writeNamedWriteable(representativeChangeType());
+            out.writeOptionalWriteable(getBucket());
+            out.writeNamedWriteable(getChangeType());
         }
-    }
-
-    /**
-     * The bucket of the single most significant event in the time series and {@code null} when there aren't any.
-     */
-    private ChangePointBucket representativeBucket() {
-        int index = representativeIndex();
-        return index >= 0 ? buckets.get(index) : null;
-    }
-
-    /**
-     * The most significant change or {@link ChangeType.Indeterminable} when there isn't any.
-     */
-    private ChangeType representativeChangeType() {
-        int index = representativeIndex();
-        return index >= 0 ? changeTypes.get(index) : new ChangeType.Indeterminable("no change type available");
     }
 
     private int representativeIndex() {
@@ -109,13 +93,13 @@ public class InternalChangePointAggregation extends InternalAggregation {
     }
 
     public ChangePointBucket getBucket() {
-        return representativeBucket();
+        int index = representativeIndex();
+        return index >= 0 ? buckets.get(index) : null;
     }
 
     public ChangeType getChangeType() {
-        // For the aggregation we're going to switch to reporting the most significant bucket to avoid the backwards
-        // compatibility issues. ES|QL is our preferred method of consuming change points which returns every change.
-        return representativeChangeType();
+        int index = representativeIndex();
+        return index >= 0 ? changeTypes.get(index) : new ChangeType.Indeterminable("no change type available");
     }
 
     @Override
