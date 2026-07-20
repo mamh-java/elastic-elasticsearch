@@ -2,5 +2,5 @@
 
 ## Description
 
-Returns `true` when any value yielded by `field` matches `pattern`, using the same regular-expression syntax as [`RLIKE`](/reference/query-languages/esql/functions-operators/operators.md#esql-rlike-operator). Unlike `RLIKE`, which is a single-value scalar, this reduces over every value of a multivalue field. A null or empty `field` returns `false`.
+Returns `true` when any value yielded by `field` matches `pattern`, using the same regular-expression syntax as [`RLIKE`](/reference/query-languages/esql/functions-operators/operators.md#esql-like-operators). `RLIKE` is a single-value scalar: applied to a multivalue field it emits a warning and returns `null`, so this is how you match a regular expression against a multivalue field. The pattern must match a value in full, as with `RLIKE`. A null or empty `field` returns `false`, and because the result is never null the predicate composes under `AND`/`OR`/`NOT`.
 

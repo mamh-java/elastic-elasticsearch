@@ -2,5 +2,5 @@
 
 ## Description
 
-Returns `true` when any value yielded by `field` matches `pattern`, using the same wildcard syntax as [`LIKE`](/reference/query-languages/esql/functions-operators/operators.md#esql-like-operator). Unlike `LIKE`, which is a single-value scalar, this reduces over every value of a multivalue field. A null or empty `field` returns `false`.
+Returns `true` when any value yielded by `field` matches `pattern`, using the same wildcard syntax as [`LIKE`](/reference/query-languages/esql/functions-operators/operators.md#esql-like-operators). `LIKE` is a single-value scalar: applied to a multivalue field it emits a warning and returns `null`, so this is how you match a wildcard pattern against a multivalue field. A null or empty `field` returns `false`, and because the result is never null the predicate composes under `AND`/`OR`/`NOT`.
 
