@@ -193,7 +193,10 @@ public class AnthropicChatCompletionServiceSettingsTests extends AbstractBWCWire
         var rateLimitSettings = instance.rateLimitSettings();
         switch (randomIntBetween(0, 2)) {
             case 0 -> modelId = randomValueOtherThan(modelId, () -> randomAlphaOfLength(8));
-            case 1 -> url = randomValueOtherThan(url, () -> randomBoolean() ? null : createUri("https://" + randomAlphaOfLength(8) + ".example"));
+            case 1 -> url = randomValueOtherThan(
+                url,
+                () -> randomBoolean() ? null : createUri("https://" + randomAlphaOfLength(8) + ".example")
+            );
             case 2 -> rateLimitSettings = randomValueOtherThan(rateLimitSettings, RateLimitSettingsTests::createRandom);
             default -> throw new AssertionError("Illegal randomisation branch");
         }
