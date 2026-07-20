@@ -22,6 +22,7 @@ import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryStringQueryBuilder;
 import org.elasticsearch.index.query.RangeQueryBuilder;
 import org.elasticsearch.index.query.SearchExecutionContext;
+import org.elasticsearch.index.query.WildcardQueryBuilder;
 import org.elasticsearch.search.vectors.KnnVectorQueryBuilder;
 import org.elasticsearch.search.vectors.RescoreVectorBuilder;
 import org.elasticsearch.test.VersionUtils;
@@ -120,6 +121,7 @@ import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
 import static org.elasticsearch.index.query.QueryBuilders.rangeQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termsQuery;
+import static org.elasticsearch.index.query.QueryBuilders.wildcardQuery;
 import static org.elasticsearch.xpack.esql.EsqlTestUtils.as;
 import static org.elasticsearch.xpack.esql.EsqlTestUtils.loadMapping;
 import static org.elasticsearch.xpack.esql.EsqlTestUtils.unboundLogicalOptimizerContext;
@@ -814,6 +816,56 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
             mvInRangeQuery(kw).toString(),
             equalTo(boolQuery().filter(unscore(rangeQuery("keyword").from("a", true).to("m", true))).toString())
         );
+    }
+
+    /**
+     * mv_like over an indexed keyword field pushes a BARE wildcard query and drops the FilterExec entirely (YES).
+     * The bare query is the predicate: a Lucene wildcard query already matches a document when any of the field's
+     * terms matches. Critically it is NOT wrapped in SingleValueQuery — that wrap is what scalar LIKE gets
+     * (see PhysicalPlanOptimizerTests#testLikePushdown), and it would match only single-valued documents, which is
+     * the exact bug mv_like exists to fix.
+     */
+    public void testMvLikePushdown() {
+        var plan = plannerOptimizer.plan("from test | where mv_like(first_name, \"Ann*\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
+        var query = mvInRangeQuery(plan);
+        assertThat(query, instanceOf(WildcardQueryBuilder.class));
+        assertThat(query.toString(), equalTo(unscore(wildcardQuery("first_name", "Ann*")).toString()));
+    }
+
+    /**
+     * NOT mv_like pushes must_not(wildcard) and drops the FilterExec — sound because the pushed query is exact, so
+     * negating it in Lucene is exact too. A document with no value for the field has no matching term, so it survives
+     * the must_not, which is what the two-valued contract requires.
+     */
+    public void testMvLikeNotPushdown() {
+        var plan = plannerOptimizer.plan("from test | where not mv_like(first_name, \"Ann*\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
+        var expected = boolQuery().mustNot(unscore(wildcardQuery("first_name", "Ann*")));
+        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
+    }
+
+    /**
+     * A text field is not pushed at all, even though `job` carries an exact `.raw` subfield: the subfield's
+     * ignore_above hole would make the pushed query under-match relative to the evaluator. The FilterExec stays,
+     * so the NO fallback is asserted rather than assumed.
+     */
+    public void testMvLikeTextNotPushed() {
+        var plan = plannerOptimizer.plan("from test | where mv_like(job, \"Ann*\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
+        assertThat(mvInRangeQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
+    }
+
+    /**
+     * The empty pattern is deliberately NOT pushed. The evaluator maps it to Automata.makeEmptyString() so it matches a
+     * value that is the empty string (agreeing with LIKE), but a Lucene wildcard query built from an empty pattern
+     * matches no term, so pushing it would drop those documents. The FilterExec is retained and the evaluator answers.
+     * The pushed-vs-evaluator differential in EsqlActionIT is what surfaced this.
+     */
+    public void testMvLikeEmptyPatternNotPushed() {
+        var plan = plannerOptimizer.plan("from test | where mv_like(first_name, \"\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
+        assertThat(mvInRangeQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
     }
 
     private static QueryBuilder mvInRangeQuery(PhysicalPlan plan) {
