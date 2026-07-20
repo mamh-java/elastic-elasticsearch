@@ -29,6 +29,7 @@ import java.util.stream.Collectors;
 
 import static org.elasticsearch.xpack.esql.expression.function.TestCaseSupplier.TypedData.MULTI_ROW_NULL;
 import static org.elasticsearch.xpack.esql.expression.function.TestCaseSupplier.TypedData.NULL;
+import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.startsWith;
@@ -39,11 +40,19 @@ public class MvLikeTests extends AbstractScalarFunctionTestCase {
     }
 
     /**
-     * The kernel carries the determinized automaton's dot rendering as its {@code @Fixed} pattern, exactly as
-     * {@code AutomataMatch} does, so {@code toString} opens with the dot graph — same shape the LIKE family asserts.
+     * mv_like dispatches on the pattern's shape, so any of four evaluators is a legitimate result: the affix fast paths
+     * for {@code literal*}, {@code *literal} and {@code *literal*}, and the automaton for everything else. Pinning only
+     * the automaton here would silently forbid the fast paths — the same reason {@code WildcardLikeTests} matches with
+     * an {@code anyOf}. The automaton kernel carries the determinized automaton's dot rendering as its {@code @Fixed}
+     * pattern, exactly as {@code AutomataMatch} does, so its {@code toString} opens with the dot graph.
      */
     private static Matcher<String> evaluatorMatcher() {
-        return startsWith("MvAutomataMatchEvaluator[field=Attribute[channel=0], pattern=digraph Automaton {\n");
+        return anyOf(
+            startsWith("MvAutomataMatchEvaluator[field=Attribute[channel=0], pattern=digraph Automaton {\n"),
+            startsWith("MvLikePrefixEvaluator[field=Attribute[channel=0], prefix="),
+            startsWith("MvLikeSuffixEvaluator[field=Attribute[channel=0], suffix="),
+            startsWith("MvLikeContainsEvaluator[field=Attribute[channel=0], literal=")
+        );
     }
 
     @ParametersFactory

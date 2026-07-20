@@ -7,10 +7,15 @@
 
 package org.elasticsearch.xpack.esql.expression.function.scalar.multivalue;
 
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.Automata;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.lucene.BytesRefs;
+import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Position;
+import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.expression.ConstantEvaluators;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.core.InvalidArgumentException;
@@ -22,6 +27,7 @@ import org.elasticsearch.xpack.esql.core.expression.predicate.regex.WildcardPatt
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.core.util.ByteMatchers;
 import org.elasticsearch.xpack.esql.evaluator.mapper.EvaluatorMapper;
 import org.elasticsearch.xpack.esql.expression.function.Example;
 import org.elasticsearch.xpack.esql.expression.function.FunctionAppliesTo;
@@ -32,6 +38,7 @@ import org.elasticsearch.xpack.esql.expression.function.Param;
 
 import java.io.IOException;
 
+import static org.elasticsearch.compute.ann.Fixed.Scope.THREAD_LOCAL;
 import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.ParamOrdinal.FIRST;
 import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.ParamOrdinal.SECOND;
 import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isFoldable;
@@ -174,12 +181,100 @@ public class MvLike extends BinaryScalarFunction implements EvaluatorMapper {
             return ConstantEvaluators.CONSTANT_FALSE_FACTORY;
         }
         WildcardPattern pattern = pattern();
-        return MvAutomataMatch.toEvaluator(
-            source(),
-            toEvaluator.apply(left()),
+        if (pattern.pattern().isEmpty()) {
             // The empty pattern accepts the empty string — same special case RegexMatch.toEvaluator makes, so a value
             // matches mv_like exactly when it would match LIKE.
-            pattern.pattern().isEmpty() ? Automata.makeEmptyString() : pattern.createAutomaton(false)
-        );
+            return MvAutomataMatch.toEvaluator(source(), toEvaluator.apply(left()), Automata.makeEmptyString());
+        }
+        /*
+         * Affix-shaped patterns skip the automaton entirely, mirroring WildcardLike.toEvaluator. The saving is larger
+         * here than for LIKE: the matcher runs once per *value*, not once per row, so replacing a per-byte
+         * RunAutomaton.step walk with a byte compare (or a SIMD substring scan) is paid for on every value of every
+         * multivalued position. `prefix*` is also the shape the DSL `prefix` clause compiles to, so the fast path lands
+         * on the consumer's hottest case.
+         *
+         * WildcardLike delegates these to StartsWith/EndsWith; mv_like cannot, because those are single-value scalars
+         * that null out on a multivalued field — the exact behaviour this function exists to avoid. So the reduction is
+         * open-coded here over the same ByteMatchers primitives.
+         */
+        ExpressionEvaluator.Factory field = toEvaluator.apply(left());
+        return switch (pattern.shape()) {
+            case WildcardPattern.Shape.Prefix(String prefix) -> new MvLikePrefixEvaluator.Factory(
+                source(),
+                field,
+                new BytesRef(prefix),
+                context -> new BytesRef()
+            );
+            case WildcardPattern.Shape.Suffix(String suffix) -> new MvLikeSuffixEvaluator.Factory(
+                source(),
+                field,
+                new BytesRef(suffix),
+                context -> new BytesRef()
+            );
+            case WildcardPattern.Shape.Contains(String literal) -> new MvLikeContainsEvaluator.Factory(
+                source(),
+                field,
+                new BytesRef(literal),
+                context -> new BytesRef()
+            );
+            case WildcardPattern.Shape.General ignored -> MvAutomataMatch.toEvaluator(source(), field, pattern.createAutomaton(false));
+        };
+    }
+
+    /** Any value starts with {@code prefix} — the {@code literal*} shape. */
+    @Evaluator(extraName = "Prefix", allNullsIsNull = false)
+    static boolean processPrefix(
+        @Position int position,
+        BytesRefBlock field,
+        @Fixed(jitConstant = true) BytesRef prefix,
+        @Fixed(includeInToString = false, scope = THREAD_LOCAL) BytesRef scratch
+    ) {
+        int start = field.getFirstValueIndex(position);
+        int end = start + field.getValueCount(position);
+        for (int i = start; i < end; i++) {
+            if (ByteMatchers.startsWith(field.getBytesRef(i, scratch), prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Any value ends with {@code suffix} — the {@code *literal} shape. */
+    @Evaluator(extraName = "Suffix", allNullsIsNull = false)
+    static boolean processSuffix(
+        @Position int position,
+        BytesRefBlock field,
+        @Fixed(jitConstant = true) BytesRef suffix,
+        @Fixed(includeInToString = false, scope = THREAD_LOCAL) BytesRef scratch
+    ) {
+        int start = field.getFirstValueIndex(position);
+        int end = start + field.getValueCount(position);
+        for (int i = start; i < end; i++) {
+            if (ByteMatchers.endsWith(field.getBytesRef(i, scratch), suffix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Any value contains {@code literal} — the {@code *literal*} shape. Routes through the SIMD substring primitive
+     * {@link ByteMatchers#containsLiteral}, as {@code WildcardLike}'s Contains fast path does.
+     */
+    @Evaluator(extraName = "Contains", allNullsIsNull = false)
+    static boolean processContains(
+        @Position int position,
+        BytesRefBlock field,
+        @Fixed(jitConstant = true) BytesRef literal,
+        @Fixed(includeInToString = false, scope = THREAD_LOCAL) BytesRef scratch
+    ) {
+        int start = field.getFirstValueIndex(position);
+        int end = start + field.getValueCount(position);
+        for (int i = start; i < end; i++) {
+            if (ByteMatchers.containsLiteral(field.getBytesRef(i, scratch), literal)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
