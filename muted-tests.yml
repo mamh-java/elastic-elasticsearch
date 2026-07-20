@@ -400,9 +400,6 @@ tests:
 - class: org.elasticsearch.xpack.esql.ccq.MultiClusterSpecIT
   method: test {csv-spec:lookup-join.mvKeywordFieldJoinWarningsFromRightSideWhenNotKept}
   issue: https://github.com/elastic/elasticsearch/issues/153046
-- class: org.elasticsearch.xpack.transform.integration.TransformTaskFailedStateIT
-  method: testStartFailedTransform
-  issue: https://github.com/elastic/elasticsearch/issues/153065
 - class: org.elasticsearch.xpack.stateless.reshard.StatelessReshardIT
   method: testMultiTermVectorsApiRealtimeGet
   issue: https://github.com/elastic/elasticsearch/issues/150101
@@ -511,9 +508,6 @@ tests:
 - class: org.elasticsearch.exponentialhistogram.ExponentialHistogramMergerTests
   method: testDifferenceForCumulativeHistos
   issue: https://github.com/elastic/elasticsearch/issues/153665
-- class: org.elasticsearch.xpack.restart.FullClusterRestartIT
-  method: testWatcherWithApiKey {cluster=UPGRADED}
-  issue: https://github.com/elastic/elasticsearch/issues/153695
 - class: org.elasticsearch.simdvec.internal.IndexInputUtilsTests
   method: testES92ConstructorRejectsUnwrappedFilterIndexInput
   issue: https://github.com/elastic/elasticsearch/issues/153738
@@ -661,3 +655,6 @@ tests:
 - class: org.elasticsearch.xpack.search.CrossClusterAsyncSearchIT
   method: testClusterDetailsAfterCCSWithFailuresOnOneShardOnly_AllowPartialResultsFalse_MinimizeRoundtripsFalse
   issue: https://github.com/elastic/elasticsearch/issues/154363
+- class: org.elasticsearch.xpack.esql.optimizer.PhysicalPlanOptimizerTests
+  method: testMaxExpressionDepth_nestedAbs_maxAllowed {default}
+  issue: https://github.com/elastic/elasticsearch/issues/154380
