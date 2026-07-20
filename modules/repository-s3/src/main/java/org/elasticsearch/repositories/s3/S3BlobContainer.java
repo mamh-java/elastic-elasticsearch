@@ -421,10 +421,11 @@ class S3BlobContainer extends AbstractBlobContainer {
                     });
                 } catch (Exception e) {
                     // Worker was not submitted, release the latch slot
+                    // We ignore exceptions since the calling thread will process unclaimed tasks
                     latch.countDown();
                 }
             }
-            // Caller thread also uploads parts
+            // Calling thread also processes tasks
             worker.run();
 
             try {
