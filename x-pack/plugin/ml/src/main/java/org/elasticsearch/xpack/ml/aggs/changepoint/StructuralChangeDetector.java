@@ -179,15 +179,24 @@ public class StructuralChangeDetector {
         int[] bestPrev = new int[n + 1];
         opt[0] = -breakPenalty;
 
-        List<Integer> R = new ArrayList<>();
-        R.add(0);
+        int[] candidateSet = new int[n + 1];
+        int candidateCount = 0;
+        candidateSet[candidateCount++] = 0;
+        // Per-candidate segment cost, memoised across the two passes over the candidate set for a
+        // given t (indexed by tau). The optimal-split pass and the pruning pass evaluate the identical
+        // cost for the same (tau, t); computing it once halves the calls to the profiled-variance cost
+        // (a Math.log plus several divisions), which dominates this method. Entries are always written
+        // before being read within a t iteration, so stale values from earlier iterations are never
+        // observed.
+        double[] segmentCostByTau = new double[n + 1];
 
+        boolean trace = logger.isTraceEnabled();
         for (int t = 1; t <= n; t++) {
             double minCost = Double.MAX_VALUE;
             int optTau = 0;
 
-            for (int i = 0; i < R.size(); i++) {
-                int tau = R.get(i);
+            for (int i = 0; i < candidateCount; i++) {
+                int tau = candidateSet[i];
 
                 int segmentLength = t - tau;
                 if (segmentLength < minSeg) {
@@ -202,37 +211,49 @@ public class StructuralChangeDetector {
                 // which is all that is needed to keep a pristine segment from being rewarded - no
                 // separate short-segment penalty.
                 double segmentCost = moments.cost(tau, t, sigma2);
+                segmentCostByTau[tau] = segmentCost;
                 double totalCost = opt[tau] + segmentCost + breakPenalty;
 
                 if (totalCost < minCost) {
                     minCost = totalCost;
                     optTau = tau;
-                    logger.trace("PELT new optimal split at [{}] with total cost [{}] and segment cost [{}]", tau, totalCost, segmentCost);
+                    if (trace) {
+                        logger.trace(
+                            "PELT new optimal split at [{}] with total cost [{}] and segment cost [{}]",
+                            tau,
+                            totalCost,
+                            segmentCost
+                        );
+                    }
                 }
             }
 
             opt[t] = minCost;
             bestPrev[t] = optTau;
 
-            for (int i = R.size() - 1; i >= 0; i--) {
-                int tau = R.get(i);
+            // Prune the candidate set, keeping ascending order: a candidate survives unless it clears
+            // minSeg and its cost already matches or exceeds the optimum for t. Compact survivors to
+            // the front in one pass, then append t.
+            int kept = 0;
+            for (int i = 0; i < candidateCount; i++) {
+                int tau = candidateSet[i];
                 int segmentLength = t - tau;
-                if (segmentLength >= minSeg) {
-                    double segmentCost = moments.cost(tau, t, sigma2);
-                    if (opt[tau] + segmentCost >= opt[t]) {
-                        R.remove(i);
+                if (segmentLength >= minSeg && opt[tau] + segmentCostByTau[tau] >= opt[t]) {
+                    if (trace) {
                         logger.trace(
                             "PELT pruning candidate with split at [{}] due to cost [{}] >= opt[{}] [{}]",
                             tau,
-                            opt[tau] + segmentCost,
+                            opt[tau] + segmentCostByTau[tau],
                             t,
                             opt[t]
                         );
                     }
+                    continue;
                 }
+                candidateSet[kept++] = tau;
             }
-
-            R.add(t);
+            candidateCount = kept;
+            candidateSet[candidateCount++] = t;
         }
 
         List<Integer> changePoints = new ArrayList<>();
@@ -248,10 +269,10 @@ public class StructuralChangeDetector {
     }
 
     /**
-     * Prefix sums of the weighted moments of {@code (x=index, y=value)} over {@code [0, i)}, so the
-     * profiled-variance cost of any candidate segment {@code [tau, t)} is an O(1) combination of
-     * {@code prefix[t] - prefix[tau]}. Built once per PELT run and never mutated; grouping the six
-     * arrays behind one type keeps the cost/residual-variance helpers cohesive and removes the
+     * Prefix sums of the weighted moments of {@code (x=index, y=value)} over {@code [0, i)}, so
+     * the profiled-variance cost of any candidate segment {@code [tau, t)} is an O(1) combination
+     * of {@code prefix[t] - prefix[tau]}. Built once per PELT run and never mutated; grouping the
+     * six arrays behind one type keeps the cost/residual-variance helpers cohesive and removes the
      * argument-ordering hazard of passing six same-typed {@code double[]} around.
      */
     private record PrefixMoments(double[] pW, double[] pX, double[] pXX, double[] pY, double[] pXY, double[] pYY) {
