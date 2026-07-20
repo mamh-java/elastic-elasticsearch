@@ -172,7 +172,7 @@ public class EventDetector {
         // Map value-array indices back to source buckets. Stationary/non-stationary classifications carry no
         // index (NO_CHANGE_POINT), so they are passed through unremapped.
         return events.stream()
-            .map(e -> e.isChange() ? e.remapChangePoint(sampledBucketValues.getBucketIndex(e.changePoint())) : e)
+            .map(e -> e.isChange() ? e.withChangePoint(sampledBucketValues.getBucketIndex(e.changePoint())) : e)
             .toList();
     }
 
