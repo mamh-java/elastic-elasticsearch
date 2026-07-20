@@ -29,10 +29,6 @@ public class PulseDetector {
     // rolling-median baseline exceeds this many robust sigmas of the residual scale. Generous pre-filter; the
     // significance decision is the KDE gate.
     private static final double PULSE_Z_THRESHOLD = 3.0;
-    // Candidates separated by at most this many buckets (and of the same sign) are one physical excursion and
-    // are merged. We do NOT chain across larger gaps: repeated/recurring excursions are a structural/dispersion
-    // matter, not something the pulse stream should fuse. Set to 1 (strictly adjacent).
-    private static final int PULSE_MERGE_MAX_GAP = 1;
     // We report at most this many pulses — the highest-z excursions. A small floor plus a slowly-growing fraction
     // of the series length, so a pathological or very noisy series cannot drown the output in spikes.
     private static final int MAX_PULSES_FLOOR = 5;
@@ -61,8 +57,8 @@ public class PulseDetector {
      * The pipeline is:
      * 1. propose a long list of candidates whose residual exceeds {@link #PULSE_Z_THRESHOLD} robust sigmas of
      *    the residual scale,
-     * 2. merge candidates within {@link #PULSE_MERGE_MAX_GAP} of one another and have the same sign into single
-     *    excursions, dropping any that span a full {@code minSegmentLength},
+     * 2. merge adjacent candidates of the same sign into single excursions, dropping any that span a full
+     *    {@code minSegmentLength},
      * 3. sort the excursions by their peak z and keep the top {@code max(MAX_PULSES_FLOOR, MAX_PULSES_FRACTION * n)}.
      * 4. build ONE Gaussian-KDE null from the residuals with <em>all</em> of those top excursions removed,
      *    and keep an excursion only if its peak's Bonferroni-corrected tail probability under that null clears
@@ -184,32 +180,35 @@ public class PulseDetector {
     }
 
     /**
-     * Builds the long list (residual z above threshold) and merges adjacent same-sign candidates within
-     * {@link #PULSE_MERGE_MAX_GAP} into excursions. A run spanning a full minimum segment length is dropped
-     * — that is a regime, owned by the structural/dispersion channels, not a point pulse.
+     * Builds the long list (residual z above threshold) and merges strictly adjacent same-sign candidates into
+     * excursions. We do NOT chain across gaps: repeated/recurring excursions are a structural/dispersion matter,
+     * not something the pulse stream should fuse. A run spanning a full minimum segment length is dropped — that
+     * is a regime, owned by the structural/dispersion channels, not a point pulse.
      */
     private List<Excursion> mergeCandidates(double[] residuals, double scale, int n) {
         List<Excursion> excursions = new ArrayList<>();
         int i = 0;
         while (i < n) {
-            if (Math.abs(residuals[i]) / scale <= PULSE_Z_THRESHOLD) {
+            double z = Math.abs(residuals[i]) / scale;
+            if (z <= PULSE_Z_THRESHOLD) {
                 i++;
                 continue;
             }
             int sign = residuals[i] >= 0.0 ? 1 : -1;
             int start = i;
-            int last = i;
+            int peak = i;
+            double peakZ = z;
             int j = i + 1;
-            while (j < n
-                && j - last <= PULSE_MERGE_MAX_GAP
-                && Math.abs(residuals[j]) / scale > PULSE_Z_THRESHOLD
-                && (residuals[j] >= 0.0 ? 1 : -1) == sign) {
-                last = j;
+            while (j < n && Math.abs(residuals[j]) / scale > PULSE_Z_THRESHOLD && (residuals[j] >= 0.0 ? 1 : -1) == sign) {
+                double zj = Math.abs(residuals[j]) / scale;
+                if (zj > peakZ) {
+                    peakZ = zj;
+                    peak = j;
+                }
                 j++;
             }
-            if (last + 1 - start < minSegmentLength) {
-                int peak = peakIndex(residuals, start, last + 1, sign);
-                excursions.add(new Excursion(start, last + 1, sign, peak, Math.abs(residuals[peak]) / scale));
+            if (j - start < minSegmentLength) {
+                excursions.add(new Excursion(start, j, sign, peak, peakZ));
             }
             i = j;
         }
@@ -242,20 +241,6 @@ public class PulseDetector {
             }
         }
         return background;
-    }
-
-    /** Index of the most extreme residual (in the excursion's direction) over {@code [start, end)}. */
-    private static int peakIndex(double[] residuals, int start, int end, int sign) {
-        int peak = start;
-        double best = Double.NEGATIVE_INFINITY;
-        for (int i = start; i < end; i++) {
-            double oriented = sign > 0 ? residuals[i] : -residuals[i];
-            if (oriented > best) {
-                best = oriented;
-                peak = i;
-            }
-        }
-        return peak;
     }
 
     private record Excursion(int start, int end, int sign, int peak, double peakZ) {}
