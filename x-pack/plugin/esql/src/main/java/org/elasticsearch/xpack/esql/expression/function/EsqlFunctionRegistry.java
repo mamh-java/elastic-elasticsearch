@@ -185,6 +185,7 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvMedi
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvMin;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvPSeriesWeightedSum;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvPercentile;
+import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvRLike;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvSlice;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvSort;
 import org.elasticsearch.xpack.esql.expression.function.scalar.multivalue.MvSum;
@@ -612,6 +613,7 @@ public class EsqlFunctionRegistry {
                 MvIntersects.DEFINITION,
                 MvPercentile.DEFINITION,
                 MvPSeriesWeightedSum.DEFINITION,
+                MvRLike.DEFINITION,
                 MvSort.DEFINITION,
                 MvSlice.DEFINITION,
                 MvUnion.DEFINITION,

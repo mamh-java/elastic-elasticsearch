@@ -21,6 +21,7 @@ import org.elasticsearch.index.query.Operator;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryStringQueryBuilder;
 import org.elasticsearch.index.query.RangeQueryBuilder;
+import org.elasticsearch.index.query.RegexpQueryBuilder;
 import org.elasticsearch.index.query.SearchExecutionContext;
 import org.elasticsearch.index.query.WildcardQueryBuilder;
 import org.elasticsearch.search.vectors.KnnVectorQueryBuilder;
@@ -119,6 +120,7 @@ import static org.elasticsearch.index.query.QueryBuilders.boolQuery;
 import static org.elasticsearch.index.query.QueryBuilders.existsQuery;
 import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
 import static org.elasticsearch.index.query.QueryBuilders.rangeQuery;
+import static org.elasticsearch.index.query.QueryBuilders.regexpQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termsQuery;
 import static org.elasticsearch.index.query.QueryBuilders.wildcardQuery;
@@ -866,6 +868,27 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var plan = plannerOptimizer.plan("from test | where mv_like(first_name, \"\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
         assertThat(mvInRangeQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
+    }
+
+    /**
+     * mv_rlike pushes a BARE regexp query for the same reason mv_like pushes a bare wildcard: a Lucene regexp query is
+     * existential over the field's terms, so it is the predicate rather than an approximation of it. Not wrapped in
+     * SingleValueQuery, and the FilterExec is dropped.
+     */
+    public void testMvRLikePushdown() {
+        var plan = plannerOptimizer.plan("from test | where mv_rlike(first_name, \"Ann.*\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
+        var query = mvInRangeQuery(plan);
+        assertThat(query, instanceOf(RegexpQueryBuilder.class));
+        assertThat(query.toString(), equalTo(unscore(regexpQuery("first_name", "Ann.*")).toString()));
+    }
+
+    /** NOT mv_rlike pushes must_not(regexp) and drops the FilterExec — exact, as the positive form is exact. */
+    public void testMvRLikeNotPushdown() {
+        var plan = plannerOptimizer.plan("from test | where not mv_rlike(first_name, \"Ann.*\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
+        var expected = boolQuery().mustNot(unscore(regexpQuery("first_name", "Ann.*")));
+        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
     }
 
     private static QueryBuilder mvInRangeQuery(PhysicalPlan plan) {

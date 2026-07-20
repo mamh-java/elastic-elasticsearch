@@ -33,6 +33,7 @@ public class MvFunctionWritables {
             MvIntersects.ENTRY,
             MvPercentile.ENTRY,
             MvPSeriesWeightedSum.ENTRY,
+            MvRLike.ENTRY,
             MvSlice.ENTRY,
             MvSingleValueOrNull.ENTRY,
             MvSort.ENTRY,

@@ -2555,6 +2555,73 @@ matched:boolean | unmatched:boolean
 false           | true
 ;
 
+// Real multivalued keyword field, so field_extract coverage runs (ROW literals do not exercise it).
+mvLikeField
+required_capability: fn_mv_like
+FROM employees
+| WHERE emp_no <= 10002 AND mv_like(job_positions, "Senior*")
+| KEEP emp_no
+| SORT emp_no
+;
+
+emp_no:integer
+10001
+10002
+;
+
+mvRLikeField
+required_capability: fn_mv_rlike
+FROM employees
+| WHERE emp_no <= 10002 AND mv_rlike(job_positions, "Senior.*")
+| KEEP emp_no
+| SORT emp_no
+;
+
+emp_no:integer
+10001
+10002
+;
+
+mvRLike
+required_capability: fn_mv_rlike
+// tag::mv_rlike[]
+ROW names = ["Anna", "Bob", "Carl"]
+| EVAL any_starts_with_a = mv_rlike(names, "A.*")
+// end::mv_rlike[]
+;
+
+// tag::mv_rlike-result[]
+names:keyword     | any_starts_with_a:boolean
+[Anna, Bob, Carl] | true
+// end::mv_rlike-result[]
+;
+
+mvRLikeClass
+required_capability: fn_mv_rlike
+// tag::mv_rlike_class[]
+ROW names = ["Anna", "Bob"]
+| EVAL has_three_letter_b_name = mv_rlike(names, "[Bb]ob")
+// end::mv_rlike_class[]
+;
+
+// tag::mv_rlike_class-result[]
+names:keyword | has_three_letter_b_name:boolean
+[Anna, Bob]   | true
+// end::mv_rlike_class-result[]
+;
+
+// RLIKE anchors the whole value, so a substring pattern does not match — and the result is false, not null.
+mvRLikeWholeValue
+required_capability: fn_mv_rlike
+ROW names = ["annabel", "bob"]
+| EVAL whole = mv_rlike(names, "anna"), anchored = mv_rlike(names, "anna.*")
+| KEEP whole, anchored
+;
+
+whole:boolean | anchored:boolean
+false         | true
+;
+
 mvContains_bothsides
 required_capability: fn_mv_contains_v1
 // tag::mv_contains_bothsides[]

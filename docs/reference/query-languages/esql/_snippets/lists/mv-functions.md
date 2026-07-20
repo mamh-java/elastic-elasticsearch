@@ -17,6 +17,7 @@
 * [`MV_MIN`](../../functions-operators/mv-functions/mv_min.md)
 * [`MV_PERCENTILE`](../../functions-operators/mv-functions/mv_percentile.md)
 * [`MV_PSERIES_WEIGHTED_SUM`](../../functions-operators/mv-functions/mv_pseries_weighted_sum.md)
+* [`MV_RLIKE`](../../functions-operators/mv-functions/mv_rlike.md)
 * [`MV_SORT`](../../functions-operators/mv-functions/mv_sort.md)
 * [`MV_SLICE`](../../functions-operators/mv-functions/mv_slice.md)
 * [`MV_SUM`](../../functions-operators/mv-functions/mv_sum.md)

@@ -1537,6 +1537,58 @@ public class EsqlActionIT extends AbstractEsqlIntegTestCase {
     }
 
     /**
+     * The mv_rlike half of the pushed-vs-evaluator differential. Same discipline as
+     * {@link #testMvLikePushedMatchesEvaluator}: the pushed regexp query and the compute-engine automaton must select
+     * identical id sets over identical data, in both polarities, for every pattern in the corpus.
+     */
+    public void testMvRLikePushedMatchesEvaluator() {
+        String index = "mv_rlike_differential";
+        assertAcked(client().admin().indices().prepareCreate(index).setMapping("id", "type=keyword", "v", "type=keyword").get());
+        Map<String, List<String>> docs = new HashMap<>();
+        docs.put("a", List.of("anna", "bob"));
+        docs.put("b", List.of("bob", "carl", "anna"));
+        docs.put("c", List.of("annabel"));
+        docs.put("d", List.of("banana"));
+        docs.put("e", List.of("", "x"));
+        docs.put("f", List.of("a.b", "plain"));   // a literal dot in the data
+        docs.put("g", List.of("ANNA"));
+        docs.put("h", List.of("aaa"));
+        docs.put("i", List.of());                 // present, zero values
+        for (var doc : docs.entrySet()) {
+            prepareIndex(index).setSource("id", doc.getKey(), "v", doc.getValue()).get();
+        }
+        prepareIndex(index).setSource("id", "j").get();  // field absent
+        client().admin().indices().prepareRefresh(index).get();
+
+        List<String> patterns = List.of("ann.*", ".*na", "anna", "a.b", "a\\\\.b", "[abc]anana", "a+", ".*", "zzz.*");
+        for (String pattern : patterns) {
+            for (String polarity : List.of("", "not ")) {
+                String pushed = "from " + index + " | where " + polarity + "mv_rlike(v, \"" + pattern + "\") | keep id | sort id";
+                String evaluated = "from "
+                    + index
+                    + " | eval x = mv_rlike(v, \""
+                    + pattern
+                    + "\") | where "
+                    + polarity
+                    + "x | keep id | sort id";
+                List<Object> pushedIds;
+                List<Object> evaluatedIds;
+                try (EsqlQueryResponse results = run(pushed)) {
+                    pushedIds = getValuesList(results).stream().map(r -> r.get(0)).toList();
+                }
+                try (EsqlQueryResponse results = run(evaluated)) {
+                    evaluatedIds = getValuesList(results).stream().map(r -> r.get(0)).toList();
+                }
+                assertThat(
+                    "pushed and evaluated disagree for pattern [" + pattern + "] polarity [" + polarity + "]",
+                    pushedIds,
+                    equalTo(evaluatedIds)
+                );
+            }
+        }
+    }
+
+    /**
      * End-to-end proof that YES pushdown is correct with no recheck: for an integer field the FilterExec is dropped, so
      * rows come straight from the pushed range. The docs cover any-one-value-in-range (b), inclusive bounds (c, d),
      * just-outside (a, e, f), single-valued (g), and no/empty values (h, i). The NOT query pins must_not(range) as the
