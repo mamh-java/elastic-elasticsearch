@@ -13,11 +13,11 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
-import org.elasticsearch.inference.ModelConfigurations;
 import org.elasticsearch.inference.ServiceSettings;
 import org.elasticsearch.inference.SimilarityMeasure;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xpack.inference.services.ConfigurationParseContext;
+import org.elasticsearch.xpack.inference.services.SettingsScope;
 import org.elasticsearch.xpack.inference.services.ibmwatsonx.IbmWatsonxRateLimitServiceSettings;
 import org.elasticsearch.xpack.inference.services.settings.FilteredXContentObject;
 import org.elasticsearch.xpack.inference.services.settings.RateLimitSettings;
@@ -57,19 +57,14 @@ public class IbmWatsonxEmbeddingsServiceSettings extends FilteredXContentObject
     public static IbmWatsonxEmbeddingsServiceSettings fromMap(Map<String, Object> map, ConfigurationParseContext context) {
         var validationException = new ValidationException();
 
-        String model = extractRequiredString(map, MODEL_ID, ModelConfigurations.SERVICE_SETTINGS, validationException);
-        String projectId = extractRequiredString(map, PROJECT_ID, ModelConfigurations.SERVICE_SETTINGS, validationException);
+        String model = extractRequiredString(map, MODEL_ID, SettingsScope.SERVICE_SETTINGS, validationException);
+        String projectId = extractRequiredString(map, PROJECT_ID, SettingsScope.SERVICE_SETTINGS, validationException);
         var url = extractUri(map, URL, validationException);
-        String apiVersion = extractRequiredString(map, API_VERSION, ModelConfigurations.SERVICE_SETTINGS, validationException);
+        String apiVersion = extractRequiredString(map, API_VERSION, SettingsScope.SERVICE_SETTINGS, validationException);
 
-        var maxInputTokens = extractOptionalPositiveInteger(
-            map,
-            MAX_INPUT_TOKENS,
-            ModelConfigurations.SERVICE_SETTINGS,
-            validationException
-        );
-        var similarityMeasure = extractSimilarity(map, ModelConfigurations.SERVICE_SETTINGS, validationException);
-        var dimensions = extractOptionalPositiveInteger(map, DIMENSIONS, ModelConfigurations.SERVICE_SETTINGS, validationException);
+        var maxInputTokens = extractOptionalPositiveInteger(map, MAX_INPUT_TOKENS, SettingsScope.SERVICE_SETTINGS, validationException);
+        var similarityMeasure = extractSimilarity(map, SettingsScope.SERVICE_SETTINGS, validationException);
+        var dimensions = extractOptionalPositiveInteger(map, DIMENSIONS, SettingsScope.SERVICE_SETTINGS, validationException);
         var rateLimitSettings = RateLimitSettings.of(map, DEFAULT_RATE_LIMIT_SETTINGS, validationException, context);
 
         validationException.throwIfValidationErrorsExist();
@@ -213,7 +208,7 @@ public class IbmWatsonxEmbeddingsServiceSettings extends FilteredXContentObject
         var extractedMaxInputTokens = extractOptionalPositiveInteger(
             serviceSettings,
             MAX_INPUT_TOKENS,
-            ModelConfigurations.SERVICE_SETTINGS,
+            SettingsScope.SERVICE_SETTINGS,
             validationException
         );
         var extractedRateLimitSettings = RateLimitSettings.of(

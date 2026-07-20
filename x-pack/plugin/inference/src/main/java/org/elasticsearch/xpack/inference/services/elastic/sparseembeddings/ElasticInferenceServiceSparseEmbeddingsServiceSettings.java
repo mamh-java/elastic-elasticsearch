@@ -12,11 +12,11 @@ import org.elasticsearch.common.ValidationException;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
-import org.elasticsearch.inference.ModelConfigurations;
 import org.elasticsearch.inference.ServiceSettings;
 import org.elasticsearch.inference.TaskType;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xpack.inference.services.ConfigurationParseContext;
+import org.elasticsearch.xpack.inference.services.SettingsScope;
 import org.elasticsearch.xpack.inference.services.elastic.ElasticInferenceService;
 import org.elasticsearch.xpack.inference.services.elastic.ElasticInferenceServiceRateLimitServiceSettings;
 import org.elasticsearch.xpack.inference.services.elastic.ElasticInferenceServiceSettingsUtils;
@@ -50,18 +50,13 @@ public class ElasticInferenceServiceSparseEmbeddingsServiceSettings extends Filt
     ) {
         ValidationException validationException = new ValidationException();
 
-        String modelId = extractRequiredString(map, MODEL_ID, ModelConfigurations.SERVICE_SETTINGS, validationException);
-        Integer maxInputTokens = extractOptionalPositiveInteger(
-            map,
-            MAX_INPUT_TOKENS,
-            ModelConfigurations.SERVICE_SETTINGS,
-            validationException
-        );
+        String modelId = extractRequiredString(map, MODEL_ID, SettingsScope.SERVICE_SETTINGS, validationException);
+        Integer maxInputTokens = extractOptionalPositiveInteger(map, MAX_INPUT_TOKENS, SettingsScope.SERVICE_SETTINGS, validationException);
         Integer maxBatchSize = ElasticInferenceServiceSettingsUtils.parseMaxBatchSize(map, validationException);
 
         RateLimitSettings.rejectRateLimitFieldForRequestContext(
             map,
-            ModelConfigurations.SERVICE_SETTINGS,
+            SettingsScope.SERVICE_SETTINGS,
             ElasticInferenceService.NAME,
             TaskType.SPARSE_EMBEDDING,
             context,

@@ -12,10 +12,10 @@ import org.elasticsearch.common.ValidationException;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
-import org.elasticsearch.inference.ModelConfigurations;
 import org.elasticsearch.inference.ServiceSettings;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xpack.inference.services.ConfigurationParseContext;
+import org.elasticsearch.xpack.inference.services.SettingsScope;
 import org.elasticsearch.xpack.inference.services.settings.FilteredXContentObject;
 import org.elasticsearch.xpack.inference.services.settings.RateLimitSettings;
 
@@ -51,12 +51,12 @@ public abstract class AmazonBedrockServiceSettings extends FilteredXContentObjec
         ValidationException validationException,
         ConfigurationParseContext context
     ) {
-        var model = extractRequiredString(map, MODEL_FIELD, ModelConfigurations.SERVICE_SETTINGS, validationException);
-        var region = extractRequiredString(map, REGION_FIELD, ModelConfigurations.SERVICE_SETTINGS, validationException);
+        var model = extractRequiredString(map, MODEL_FIELD, SettingsScope.SERVICE_SETTINGS, validationException);
+        var region = extractRequiredString(map, REGION_FIELD, SettingsScope.SERVICE_SETTINGS, validationException);
         var provider = extractRequiredEnum(
             map,
             PROVIDER_FIELD,
-            ModelConfigurations.SERVICE_SETTINGS,
+            SettingsScope.SERVICE_SETTINGS,
             AmazonBedrockProvider::fromString,
             EnumSet.allOf(AmazonBedrockProvider.class),
             validationException

@@ -12,13 +12,13 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.mapper.vectors.DenseVectorFieldMapper;
-import org.elasticsearch.inference.ModelConfigurations;
 import org.elasticsearch.inference.ServiceSettings;
 import org.elasticsearch.inference.SimilarityMeasure;
 import org.elasticsearch.xcontent.ToXContentObject;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xpack.core.ml.inference.assignment.AdaptiveAllocationsSettings;
 import org.elasticsearch.xpack.inference.services.ConfigurationParseContext;
+import org.elasticsearch.xpack.inference.services.SettingsScope;
 
 import java.io.IOException;
 import java.util.EnumSet;
@@ -66,7 +66,7 @@ public class CustomElandInternalTextEmbeddingServiceSettings extends Elasticsear
 
     private static CustomElandInternalTextEmbeddingServiceSettings forPersisted(Map<String, Object> map) {
         var commonFields = commonFieldsFromMap(map);
-        Integer dims = extractOptionalPositiveInteger(map, DIMENSIONS, ModelConfigurations.SERVICE_SETTINGS, new ValidationException());
+        Integer dims = extractOptionalPositiveInteger(map, DIMENSIONS, SettingsScope.SERVICE_SETTINGS, new ValidationException());
 
         return new CustomElandInternalTextEmbeddingServiceSettings(commonFields, dims);
     }
@@ -83,11 +83,11 @@ public class CustomElandInternalTextEmbeddingServiceSettings extends Elasticsear
 
     private static CommonFields commonFieldsFromMap(Map<String, Object> map, ValidationException validationException) {
         var internalSettings = ElasticsearchInternalServiceSettings.fromMap(map, validationException);
-        SimilarityMeasure similarity = extractSimilarity(map, ModelConfigurations.SERVICE_SETTINGS, validationException);
+        SimilarityMeasure similarity = extractSimilarity(map, SettingsScope.SERVICE_SETTINGS, validationException);
         DenseVectorFieldMapper.ElementType elementType = extractOptionalEnum(
             map,
             ELEMENT_TYPE,
-            ModelConfigurations.SERVICE_SETTINGS,
+            SettingsScope.SERVICE_SETTINGS,
             DenseVectorFieldMapper.ElementType::fromString,
             EnumSet.of(DenseVectorFieldMapper.ElementType.BYTE, DenseVectorFieldMapper.ElementType.FLOAT),
             validationException

@@ -12,11 +12,11 @@ import org.elasticsearch.common.ValidationException;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
-import org.elasticsearch.inference.ModelConfigurations;
 import org.elasticsearch.inference.ServiceSettings;
 import org.elasticsearch.xcontent.ToXContentObject;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xpack.inference.services.ConfigurationParseContext;
+import org.elasticsearch.xpack.inference.services.SettingsScope;
 import org.elasticsearch.xpack.inference.services.settings.FilteredXContentObject;
 import org.elasticsearch.xpack.inference.services.settings.RateLimitSettings;
 
@@ -48,10 +48,10 @@ public class AlibabaCloudSearchServiceSettings extends FilteredXContentObject
         ValidationException validationException
     ) {
 
-        var serviceId = extractRequiredString(map, SERVICE_ID, ModelConfigurations.SERVICE_SETTINGS, validationException);
-        var host = extractRequiredString(map, HOST, ModelConfigurations.SERVICE_SETTINGS, validationException);
-        var workspaceName = extractRequiredString(map, WORKSPACE_NAME, ModelConfigurations.SERVICE_SETTINGS, validationException);
-        var httpSchema = extractOptionalString(map, HTTP_SCHEMA_NAME, ModelConfigurations.SERVICE_SETTINGS, validationException);
+        var serviceId = extractRequiredString(map, SERVICE_ID, SettingsScope.SERVICE_SETTINGS, validationException);
+        var host = extractRequiredString(map, HOST, SettingsScope.SERVICE_SETTINGS, validationException);
+        var workspaceName = extractRequiredString(map, WORKSPACE_NAME, SettingsScope.SERVICE_SETTINGS, validationException);
+        var httpSchema = extractOptionalString(map, HTTP_SCHEMA_NAME, SettingsScope.SERVICE_SETTINGS, validationException);
 
         validateHttpSchema(httpSchema, validationException);
 
@@ -106,7 +106,7 @@ public class AlibabaCloudSearchServiceSettings extends FilteredXContentObject
         var extractedHttpSchema = extractOptionalString(
             serviceSettings,
             HTTP_SCHEMA_NAME,
-            ModelConfigurations.SERVICE_SETTINGS,
+            SettingsScope.SERVICE_SETTINGS,
             validationException
         );
 

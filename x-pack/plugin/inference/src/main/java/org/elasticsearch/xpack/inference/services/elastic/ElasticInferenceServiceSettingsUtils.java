@@ -10,9 +10,9 @@ package org.elasticsearch.xpack.inference.services.elastic;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.common.ValidationException;
 import org.elasticsearch.core.Nullable;
-import org.elasticsearch.inference.ModelConfigurations;
 import org.elasticsearch.xpack.inference.services.ConfigurationParseContext;
 import org.elasticsearch.xpack.inference.services.ServiceUtils;
+import org.elasticsearch.xpack.inference.services.SettingsScope;
 
 import java.util.Map;
 
@@ -31,7 +31,7 @@ public final class ElasticInferenceServiceSettingsUtils {
             serviceSettings,
             MAX_BATCH_SIZE,
             MAX_BATCH_SIZE_UPPER_BOUND,
-            ModelConfigurations.SERVICE_SETTINGS,
+            SettingsScope.SERVICE_SETTINGS,
             validationException
         );
     }
