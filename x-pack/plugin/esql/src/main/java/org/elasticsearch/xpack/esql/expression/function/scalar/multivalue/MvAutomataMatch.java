@@ -21,6 +21,8 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.AutomataMatch;
 
+import static org.elasticsearch.compute.ann.Fixed.Scope.THREAD_LOCAL;
+
 /**
  * The multivalue analogue of {@link AutomataMatch}: matches a whole position's worth of
  * {@link BytesRef}s against an {@link Automaton} under an <em>any-value</em> reduction.
@@ -53,7 +55,7 @@ public class MvAutomataMatch {
         }
 
         ByteRunAutomaton run = new ByteRunAutomaton(automaton, true);
-        return new MvAutomataMatchEvaluator.Factory(source, field, run, AutomataMatch.toDot(automaton));
+        return new MvAutomataMatchEvaluator.Factory(source, field, run, AutomataMatch.toDot(automaton), context -> new BytesRef());
     }
 
     @Evaluator(allNullsIsNull = false)
@@ -61,11 +63,11 @@ public class MvAutomataMatch {
         @Position int position,
         BytesRefBlock field,
         @Fixed(includeInToString = false) ByteRunAutomaton automaton,
-        @Fixed String pattern
+        @Fixed String pattern,
+        @Fixed(includeInToString = false, scope = THREAD_LOCAL) BytesRef scratch
     ) {
         int count = field.getValueCount(position);
         int start = field.getFirstValueIndex(position);
-        BytesRef scratch = new BytesRef();
         for (int i = start; i < start + count; i++) {
             BytesRef v = field.getBytesRef(i, scratch);
             if (automaton.run(v.bytes, v.offset, v.length)) {

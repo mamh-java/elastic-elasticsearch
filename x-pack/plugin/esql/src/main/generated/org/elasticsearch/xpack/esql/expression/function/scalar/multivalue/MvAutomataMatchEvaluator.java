@@ -6,6 +6,8 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.multivalue;
 
 import java.lang.Override;
 import java.lang.String;
+import java.util.function.Function;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.apache.lucene.util.automaton.ByteRunAutomaton;
 import org.elasticsearch.compute.data.Block;
@@ -33,16 +35,19 @@ public final class MvAutomataMatchEvaluator implements ExpressionEvaluator {
 
   private final String pattern;
 
+  private final BytesRef scratch;
+
   private final DriverContext driverContext;
 
   private Warnings warnings;
 
   public MvAutomataMatchEvaluator(Source source, ExpressionEvaluator field,
-      ByteRunAutomaton automaton, String pattern, DriverContext driverContext) {
+      ByteRunAutomaton automaton, String pattern, BytesRef scratch, DriverContext driverContext) {
     this.source = source;
     this.field = field;
     this.automaton = automaton;
     this.pattern = pattern;
+    this.scratch = scratch;
     this.driverContext = driverContext;
   }
 
@@ -63,7 +68,7 @@ public final class MvAutomataMatchEvaluator implements ExpressionEvaluator {
   public BooleanBlock eval(int positionCount, BytesRefBlock fieldBlock) {
     try(BooleanBlock.Builder result = driverContext.blockFactory().newBooleanBlockBuilder(positionCount)) {
       position: for (int p = 0; p < positionCount; p++) {
-        result.appendBoolean(MvAutomataMatch.process(p, fieldBlock, this.automaton, this.pattern));
+        result.appendBoolean(MvAutomataMatch.process(p, fieldBlock, this.automaton, this.pattern, this.scratch));
       }
       return result.build();
     }
@@ -95,17 +100,20 @@ public final class MvAutomataMatchEvaluator implements ExpressionEvaluator {
 
     private final String pattern;
 
+    private final Function<DriverContext, BytesRef> scratch;
+
     public Factory(Source source, ExpressionEvaluator.Factory field, ByteRunAutomaton automaton,
-        String pattern) {
+        String pattern, Function<DriverContext, BytesRef> scratch) {
       this.source = source;
       this.field = field;
       this.automaton = automaton;
       this.pattern = pattern;
+      this.scratch = scratch;
     }
 
     @Override
     public MvAutomataMatchEvaluator get(DriverContext context) {
-      return new MvAutomataMatchEvaluator(source, field.get(context), automaton, pattern, context);
+      return new MvAutomataMatchEvaluator(source, field.get(context), automaton, pattern, scratch.apply(context), context);
     }
 
     @Override

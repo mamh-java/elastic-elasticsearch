@@ -11,28 +11,18 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.Automata;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
-import org.elasticsearch.common.lucene.BytesRefs;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
 import org.elasticsearch.compute.ann.Position;
 import org.elasticsearch.compute.data.BytesRefBlock;
-import org.elasticsearch.compute.expression.ConstantEvaluators;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
-import org.elasticsearch.xpack.esql.capabilities.TranslationAware;
-import org.elasticsearch.xpack.esql.core.InvalidArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
-import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
-import org.elasticsearch.xpack.esql.core.expression.FoldContext;
-import org.elasticsearch.xpack.esql.core.expression.Nullability;
-import org.elasticsearch.xpack.esql.core.expression.function.scalar.BinaryScalarFunction;
 import org.elasticsearch.xpack.esql.core.expression.predicate.regex.WildcardPattern;
 import org.elasticsearch.xpack.esql.core.querydsl.query.Query;
 import org.elasticsearch.xpack.esql.core.querydsl.query.WildcardQuery;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
-import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.util.ByteMatchers;
-import org.elasticsearch.xpack.esql.evaluator.mapper.EvaluatorMapper;
 import org.elasticsearch.xpack.esql.expression.function.Example;
 import org.elasticsearch.xpack.esql.expression.function.FunctionAppliesTo;
 import org.elasticsearch.xpack.esql.expression.function.FunctionAppliesToLifecycle;
@@ -45,23 +35,18 @@ import org.elasticsearch.xpack.esql.planner.TranslatorHandler;
 import java.io.IOException;
 
 import static org.elasticsearch.compute.ann.Fixed.Scope.THREAD_LOCAL;
-import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.ParamOrdinal.FIRST;
-import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.ParamOrdinal.SECOND;
-import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isFoldable;
-import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isString;
 
 /**
  * Any-value wildcard matching over a multivalued field: returns {@code true} when <em>any</em> value of
  * {@code field} matches {@code pattern}.
  * <p>
- * {@code LIKE} is a single-value scalar — applied to a multivalued field it yields {@code null} rather than
- * reducing to any-value semantics. This is the reduction, and it is the semantics a Lucene {@code wildcard}
- * query already has over a multivalued field: an index matches a document when any value of the field matches.
- * <p>
- * Two-valued ({@link Nullability#FALSE}): a null or empty field yields {@code false}, never {@code null}, so the
- * predicate composes through {@code AND}/{@code OR}/{@code NOT} the way {@code mv_contains} does.
+ * {@code LIKE} is a single-value scalar — applied to a multivalued field it yields {@code null} rather than reducing
+ * to any-value semantics. This is the reduction, and it is the semantics a Lucene {@code wildcard} query already has
+ * over a multivalued field: an index matches a document when any value of the field matches. The shared base
+ * {@link MvRegexMatch} carries the two-valued contract, type resolution, and pushdown; this class supplies the
+ * wildcard grammar, the affix fast paths, and the {@code wildcard} query.
  */
-public class MvLike extends BinaryScalarFunction implements EvaluatorMapper, TranslationAware {
+public class MvLike extends MvRegexMatch {
     public static final NamedWriteableRegistry.Entry ENTRY = new NamedWriteableRegistry.Entry(Expression.class, "MvLike", MvLike::new);
 
     public static final FunctionDefinition DEFINITION = FunctionDefinition.def(MvLike.class).binary(MvLike::new).name("mv_like");
@@ -111,60 +96,6 @@ public class MvLike extends BinaryScalarFunction implements EvaluatorMapper, Tra
     }
 
     @Override
-    protected TypeResolution resolveType() {
-        if (childrenResolved() == false) {
-            return new TypeResolution("Unresolved children");
-        }
-
-        // A null-typed argument on either side is a valid signature: the whole predicate folds to false, per the
-        // two-valued contract — a null field has no value to match, and a null pattern matches nothing.
-        if (left().dataType() != DataType.NULL) {
-            TypeResolution resolution = isString(left(), sourceText(), FIRST);
-            if (resolution.unresolved()) {
-                return resolution;
-            }
-        }
-        if (right().dataType() == DataType.NULL) {
-            return TypeResolution.TYPE_RESOLVED;
-        }
-
-        TypeResolution resolution = isString(right(), sourceText(), SECOND).and(isFoldable(right(), sourceText(), SECOND));
-        if (resolution.unresolved()) {
-            return resolution;
-        }
-        // A well-typed literal that happens to hold null matches nothing; it folds to false rather than erroring.
-        if (patternString() == null) {
-            return TypeResolution.TYPE_RESOLVED;
-        }
-
-        // Build the pattern here so a malformed one is an analysis-time error rather than a planner crash.
-        try {
-            pattern();
-        } catch (InvalidArgumentException | IllegalArgumentException e) {
-            return new TypeResolution("Invalid pattern [" + patternString() + "] for [" + sourceText() + "]: " + e.getMessage());
-        }
-        return TypeResolution.TYPE_RESOLVED;
-    }
-
-    private String patternString() {
-        return BytesRefs.toString(right().fold(FoldContext.small()));
-    }
-
-    private WildcardPattern pattern() {
-        return new WildcardPattern(patternString());
-    }
-
-    @Override
-    public DataType dataType() {
-        return DataType.BOOLEAN;
-    }
-
-    @Override
-    public Nullability nullable() {
-        return Nullability.FALSE;
-    }
-
-    @Override
     protected MvLike replaceChildren(Expression newLeft, Expression newRight) {
         return new MvLike(source(), newLeft, newRight);
     }
@@ -175,22 +106,25 @@ public class MvLike extends BinaryScalarFunction implements EvaluatorMapper, Tra
     }
 
     @Override
-    public Object fold(FoldContext ctx) {
-        return EvaluatorMapper.super.fold(source(), ctx);
+    protected void validatePattern(String pattern) {
+        // The WildcardPattern constructor force-validates the escape syntax.
+        new WildcardPattern(pattern);
+    }
+
+    /** The empty pattern matches only the empty string; it cannot be pushed (see {@link #buildEvaluator}), so it is not pushable. */
+    @Override
+    protected boolean patternPushable(String pattern) {
+        return pattern.isEmpty() == false;
     }
 
     @Override
-    public ExpressionEvaluator.Factory toEvaluator(ToEvaluator toEvaluator) {
-        // A null field has no values to match and a null pattern matches nothing, so either makes the predicate
-        // constant false — whether the null arrives as a null-typed argument or as a well-typed literal holding null.
-        if (left().dataType() == DataType.NULL || right().dataType() == DataType.NULL || patternString() == null) {
-            return ConstantEvaluators.CONSTANT_FALSE_FACTORY;
-        }
-        WildcardPattern pattern = pattern();
-        if (pattern.pattern().isEmpty()) {
+    protected ExpressionEvaluator.Factory buildEvaluator(ToEvaluator toEvaluator, String patternString) {
+        ExpressionEvaluator.Factory field = toEvaluator.apply(left());
+        if (patternString.isEmpty()) {
             // The empty pattern accepts the empty string — same special case RegexMatch.toEvaluator makes, so a value
-            // matches mv_like exactly when it would match LIKE.
-            return MvAutomataMatch.toEvaluator(source(), toEvaluator.apply(left()), Automata.makeEmptyString());
+            // matches mv_like exactly when it would match LIKE. A Lucene wildcard query built from an empty pattern
+            // matches no term, which is why patternPushable() refuses it and this evaluator answers instead.
+            return MvAutomataMatch.toEvaluator(source(), field, Automata.makeEmptyString());
         }
         /*
          * Affix-shaped patterns skip the automaton entirely, mirroring WildcardLike.toEvaluator. The saving is larger
@@ -203,7 +137,7 @@ public class MvLike extends BinaryScalarFunction implements EvaluatorMapper, Tra
          * that null out on a multivalued field — the exact behaviour this function exists to avoid. So the reduction is
          * open-coded here over the same ByteMatchers primitives.
          */
-        ExpressionEvaluator.Factory field = toEvaluator.apply(left());
+        WildcardPattern pattern = new WildcardPattern(patternString);
         return switch (pattern.shape()) {
             case WildcardPattern.Shape.Prefix(String prefix) -> new MvLikePrefixEvaluator.Factory(
                 source(),
@@ -227,55 +161,12 @@ public class MvLike extends BinaryScalarFunction implements EvaluatorMapper, Tra
         };
     }
 
-    /**
-     * A Lucene multi-term query on a keyword field is inherently existential: a {@code wildcard} query matches a
-     * document iff <em>some</em> indexed term of the field matches the compiled automaton. That is {@code mv_like}'s
-     * definition verbatim — any value matches, and a missing field has no terms and so does not match, agreeing with
-     * the two-valued contract. The bare query <em>is</em> the predicate, so this is {@link Translatable#YES}: the
-     * filter is dropped, and {@code must_not(wildcard)} is an exact negation.
-     * <p>
-     * Nothing here wraps the query in {@code SingleValueQuery}. That wrap exists to give single-value scalars their
-     * null-on-multivalue semantics and would be a correctness bug for this predicate — it would match only
-     * single-valued documents. The avoidance is structural rather than a flag: {@code TranslatorHandler.asQuery} wraps
-     * only {@link TranslationAware.SingleValueTranslationAware} implementers, and this class deliberately implements
-     * plain {@link TranslationAware}, exactly as {@code mv_contains} does.
-     */
-    @Override
-    public Translatable translatable(LucenePushdownPredicates pushdownPredicates) {
-        /*
-         * text is excluded outright, even where an exact `.keyword` subfield exists. The analyzed field's terms are
-         * tokens rather than whole values, and routing to the subfield inherits that subfield's ignore_above hole:
-         * values the subfield ignored are matched by the evaluator but invisible to the pushed query. That is an
-         * under-match, which RECHECK cannot repair — a recheck can only drop surfaced rows, never restore missing ones.
-         */
-        if (left().dataType() == DataType.TEXT) {
-            return Translatable.NO;
-        }
-        // A pattern that is absent or null folds the predicate to false long before this; there is no query to build.
-        if (right().dataType() == DataType.NULL || patternString() == null) {
-            return Translatable.NO;
-        }
-        /*
-         * The empty pattern is not pushable. The evaluator maps it to Automata.makeEmptyString(), matching a value that
-         * is the empty string — the same special case RegexMatch makes, so mv_like agrees with LIKE. A Lucene wildcard
-         * query built from an empty pattern matches no term at all, so pushing it would drop documents whose field
-         * holds an empty string. That is an under-match, which no recheck can repair, so the evaluator keeps it.
-         * The pushed-vs-evaluator differential in EsqlActionIT is what caught this.
-         */
-        if (patternString().isEmpty()) {
-            return Translatable.NO;
-        }
-        return pushdownPredicates.isPushableFieldAttribute(left()) ? Translatable.YES : Translatable.NO;
-    }
-
     @Override
     public Query asQuery(LucenePushdownPredicates pushdownPredicates, TranslatorHandler handler) {
-        Expression field = left();
-        LucenePushdownPredicates.checkIsPushableAttribute(field);
         return new WildcardQuery(
             source(),
-            handler.nameOf(field instanceof FieldAttribute fa ? fa.exactAttribute() : field),
-            pattern().asLuceneWildcard(),
+            pushdownFieldName(handler),
+            new WildcardPattern(patternString()).asLuceneWildcard(),
             false,
             pushdownPredicates.flags().stringLikeOnIndex()
         );
