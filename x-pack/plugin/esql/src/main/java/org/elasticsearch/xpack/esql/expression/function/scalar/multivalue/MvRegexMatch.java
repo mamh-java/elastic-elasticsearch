@@ -8,7 +8,6 @@
 package org.elasticsearch.xpack.esql.expression.function.scalar.multivalue;
 
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.automaton.TooComplexToDeterminizeException;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.lucene.BytesRefs;
 import org.elasticsearch.compute.expression.ConstantEvaluators;
@@ -91,12 +90,12 @@ public abstract class MvRegexMatch extends BinaryScalarFunction implements Evalu
             );
         }
 
-        // Build the pattern here so a malformed one is an analysis-time error rather than a planner crash. The regex
-        // grammar can also blow past the determinize work limit, which throws TooComplexToDeterminizeException — a
-        // RuntimeException that is neither of the other two, so it must be caught explicitly.
+        // Build the pattern here so a malformed or over-complex one is an analysis-time error rather than a planner
+        // crash. AbstractStringPattern.createAutomaton already converts a determinize blow-up (TooComplexToDeterminize)
+        // into IllegalArgumentException, so the two exception types below cover every validatePattern failure.
         try {
             validatePattern(BytesRefs.toString(folded));
-        } catch (InvalidArgumentException | IllegalArgumentException | TooComplexToDeterminizeException e) {
+        } catch (InvalidArgumentException | IllegalArgumentException e) {
             return new TypeResolution("Invalid pattern [" + BytesRefs.toString(folded) + "] for [" + sourceText() + "]: " + e.getMessage());
         }
         return TypeResolution.TYPE_RESOLVED;
@@ -144,11 +143,12 @@ public abstract class MvRegexMatch extends BinaryScalarFunction implements Evalu
      * avoidance is structural: this class implements plain {@link TranslationAware}, never
      * {@link TranslationAware.SingleValueTranslationAware}, so {@code TranslatorHandler.asQuery} can never apply the wrap.
      * <p>
-     * One caveat inherited verbatim from {@code WildcardLike}/{@code RLike}: on a keyword field with a {@code normalizer}
-     * the pushed query normalizes the pattern server-side while the evaluator matches the raw pattern against the
-     * normalized doc value, so the two can disagree. ES|QL currently reports such fields as pushable (the index resolver
-     * hard-codes {@code normalized = false}), so this is not corrected here; it is the same shared upstream limitation
-     * the scalar operators carry.
+     * One caveat inherited from the scalar operators {@code WildcardLike}/{@code RLike}: ES|QL reports a keyword field
+     * with a {@code normalizer} as pushable (the index resolver hard-codes {@code normalized = false}). On such a field
+     * the pushed query can normalize the pattern server-side while the evaluator matches the raw pattern against the
+     * normalized doc value, so the two disagree — most clearly for wildcard matching, where the keyword field type
+     * normalizes the pushed pattern. This is not corrected here; it is the same shared upstream limitation the scalar
+     * operators carry.
      */
     @Override
     public final Translatable translatable(LucenePushdownPredicates pushdownPredicates) {
@@ -179,8 +179,8 @@ public abstract class MvRegexMatch extends BinaryScalarFunction implements Evalu
     }
 
     /**
-     * Validate the folded pattern, throwing {@link InvalidArgumentException}, {@link IllegalArgumentException} or
-     * {@link TooComplexToDeterminizeException} if it is malformed. Called only with a non-null scalar pattern string.
+     * Validate the folded pattern, throwing {@link InvalidArgumentException} or {@link IllegalArgumentException} if it
+     * is malformed or too complex to determinize. Called only with a non-null scalar pattern string.
      */
     protected abstract void validatePattern(String pattern);
 

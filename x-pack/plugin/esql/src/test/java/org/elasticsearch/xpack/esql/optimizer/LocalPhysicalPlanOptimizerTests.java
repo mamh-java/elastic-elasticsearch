@@ -904,15 +904,39 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
 
     /**
      * A calculated (non-FieldAttribute) argument cannot push — isPushableFieldAttribute requires a FieldAttribute. The
-     * FilterExec is retained and the evaluator answers. This also pins the premise of the pushed-vs-evaluator
-     * differential in EsqlActionIT: its `EVAL x = mv_like(...) | WHERE x` arm defeats pushdown precisely because `x` is
-     * a reference attribute, not a field — if a future optimizer inlined it, both differential arms would push and the
-     * differential would compare pushed against pushed, proving nothing. This test fails first if that ever changes.
+     * FilterExec is retained and the evaluator answers.
      */
     public void testMvLikeCalculatedFieldNotPushed() {
         var plan = plannerOptimizer.plan("from test | eval f = concat(first_name, \"x\") | where mv_like(f, \"Ann*\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
         assertThat(pushedQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
+    }
+
+    /**
+     * Pins the premise of the pushed-vs-evaluator differential in EsqlActionIT. That differential compares
+     * {@code WHERE mv_like(v, p)} (pushed) against {@code EVAL x = mv_like(v, p) | WHERE x} (evaluated), and it only
+     * proves anything if the second form does NOT push. This is that exact shape — a reference attribute over a plain
+     * field, not a calculated field — and it must retain the FilterExec. If a future optimizer inlined the single-use
+     * eval alias into the filter, both differential arms would push, the differential would compare pushed against
+     * pushed, and this test is what goes red first.
+     */
+    public void testMvLikeEvalReferenceNotPushed() {
+        var plan = plannerOptimizer.plan("from test | eval x = mv_like(first_name, \"Ann*\") | where x");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
+        assertThat(pushedQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
+    }
+
+    /**
+     * mv_rlike DOES push the empty pattern, the one case where the two functions diverge: RegExp("") accepts exactly the
+     * empty string and a Lucene RegexpQuery("") matches the empty-string term, so pushed and evaluator agree (unlike
+     * mv_like's empty wildcard, which matches no term — see testMvLikeEmptyPatternNotPushed). Pinning both sides makes
+     * the deliberate asymmetry deletion-proof.
+     */
+    public void testMvRLikeEmptyPatternPushdown() {
+        var plan = plannerOptimizer.plan("from test | where mv_rlike(first_name, \"\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
+        assertThat(pushedQuery(plan), instanceOf(RegexpQueryBuilder.class));
+        assertThat(pushedQuery(plan).toString(), equalTo(unscore(regexpQuery("first_name", "")).toString()));
     }
 
     private static QueryBuilder pushedQuery(PhysicalPlan plan) {

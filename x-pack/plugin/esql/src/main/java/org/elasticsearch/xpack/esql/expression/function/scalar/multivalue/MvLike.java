@@ -108,8 +108,10 @@ public class MvLike extends MvRegexMatch {
 
     @Override
     protected void validatePattern(String pattern) {
-        // The WildcardPattern constructor force-validates the escape syntax.
-        new WildcardPattern(pattern);
+        // The constructor force-validates the escape syntax; building the automaton additionally surfaces an
+        // over-complex pattern (determinize work-limit) as an analysis-time error rather than a late data-node crash,
+        // matching mv_rlike. createAutomaton converts TooComplexToDeterminizeException to IllegalArgumentException.
+        new WildcardPattern(pattern).createAutomaton(false);
     }
 
     /** The empty pattern matches only the empty string; it cannot be pushed (see {@link #buildEvaluator}), so it is not pushable. */

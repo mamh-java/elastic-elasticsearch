@@ -2992,6 +2992,9 @@ public class VerifierTests extends ESTestCase {
             "FROM test | WHERE mv_like(first_name, [\"a*\", \"b*\"])",
             containsString("must be a single pattern string")
         );
+        // An over-complex wildcard fails at analysis (the automaton is built in validatePattern), not late on the data
+        // node — matching mv_rlike rather than the scalar LIKE's late failure.
+        defaultAnalyzer().error("FROM test | WHERE mv_like(first_name, \"" + "*ab".repeat(200) + "\")", containsString("Invalid pattern"));
     }
 
     public void testMvRLikePattern() {
