@@ -210,12 +210,8 @@ final class DataNodeComputeHandler implements TransportRequestHandler<DataNodeRe
                                 // work as the final driver.
                                 queryPragmas.nodeLevelReduction() && sameNodeAsCoordinator == false,
                                 queryPragmas.nodeLevelReduction() && enableReduceNodeLateMaterialization,
-                                /*
-                                 * Remote fetch wiring must only enable retained contexts after the coordinator planner is gated by
-                                 * EsqlCapabilities.Cap.REMOTE_FETCH, the request minimum transport version, and this specific connection's
-                                 * transport version. Otherwise a newer coordinator could serialize remote-fetch plan writeables to an older
-                                 * data node during a rolling upgrade.
-                                 */
+                                // TODO: gate on EsqlCapabilities.Cap.REMOTE_FETCH plus request/connection transport versions
+                                // when coordinator planning starts requesting retained contexts.
                                 false
                             );
                             transportService.sendChildRequest(
@@ -846,6 +842,20 @@ final class DataNodeComputeHandler implements TransportRequestHandler<DataNodeRe
                 listener.onFailure(e);
                 return;
             }
+            /*
+             * The compute holds its own lease on the retained contexts while its drivers run. Cancellation closes the
+             * registration asynchronously, which rejects new fetch leases immediately, but must not release the
+             * contexts out from under still-running drivers; that only happens once this lease is closed in the
+             * response listener, after the compute has completed.
+             */
+            final RetainedSearchContextsRegistry.Handle computeLease;
+            try {
+                computeLease = computeService.remoteFetchService().acquireRetainedContexts(nodeReduceSessionId);
+            } catch (Exception e) {
+                retainedSearchContexts.close();
+                listener.onFailure(e);
+                return;
+            }
             ((CancellableTask) task).addListener(retainedSearchContexts::close);
             responseListener = ActionListener.wrap(response -> {
                 boolean success = false;
@@ -854,12 +864,13 @@ final class DataNodeComputeHandler implements TransportRequestHandler<DataNodeRe
                     listener.onResponse(response);
                     success = true;
                 } finally {
+                    computeLease.close();
                     if (success == false) {
                         retainedSearchContexts.close();
                     }
                 }
             }, e -> {
-                try (retainedSearchContexts) {
+                try (retainedSearchContexts; computeLease) {
                     listener.onFailure(e);
                 }
             });

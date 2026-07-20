@@ -19,6 +19,7 @@ import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.search.SearchModule;
 import org.elasticsearch.search.internal.AliasFilter;
 import org.elasticsearch.test.AbstractWireSerializingTestCase;
+import org.elasticsearch.test.TransportVersionUtils;
 import org.elasticsearch.xpack.esql.SerializationTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
 import org.elasticsearch.xpack.esql.optimizer.LogicalOptimizerContext;
@@ -124,11 +125,17 @@ public class DataNodeRequestSerializationTests extends AbstractWireSerializingTe
 
         assertTrue(copy.retainSearchContexts());
         assertThat(copy.getDescription(), containsString("retainSearchContexts=true"));
+
+        DataNodeRequest downgraded = copyInstance(
+            request,
+            TransportVersionUtils.getPreviousVersion(DataNodeRequest.ESQL_REMOTE_FETCH_RETAINED_CONTEXTS)
+        );
+        assertFalse(downgraded.retainSearchContexts());
     }
 
     @Override
     protected DataNodeRequest mutateInstance(DataNodeRequest in) throws IOException {
-        return switch (between(0, 9)) {
+        return switch (between(0, 10)) {
             case 0 -> {
                 var request = new DataNodeRequest(
                     randomAlphaOfLength(20),
@@ -330,6 +337,23 @@ public class DataNodeRequestSerializationTests extends AbstractWireSerializingTe
                     in.indicesOptions(),
                     in.runNodeLevelReduction() == false,
                     in.reductionLateMaterialization() == false,
+                    in.retainSearchContexts()
+                );
+                request.setParentTask(request.getParentTask());
+                yield request;
+            }
+            case 10 -> {
+                var request = new DataNodeRequest(
+                    in.sessionId(),
+                    in.configuration(),
+                    in.clusterAlias(),
+                    in.shards(),
+                    in.aliasFilters(),
+                    in.plan(),
+                    in.indices(),
+                    in.indicesOptions(),
+                    in.runNodeLevelReduction(),
+                    in.reductionLateMaterialization(),
                     in.retainSearchContexts() == false
                 );
                 request.setParentTask(request.getParentTask());

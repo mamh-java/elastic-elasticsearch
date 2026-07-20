@@ -267,17 +267,43 @@ public class RetainedSearchContextsRegistryTests extends ESTestCase {
             registry.closeRegistration(sessionId);
         });
 
-        registry.register("session-1", contexts);
-        RetainedSearchContextsRegistry.Handle fetchLease = registry.acquire("session-1");
-        releaser.track(node, "session-1");
+        try (RetainedSearchContextsRegistry.Handle registration = registry.register("session-1", contexts)) {
+            RetainedSearchContextsRegistry.Handle fetchLease = registry.acquire("session-1");
+            releaser.track(node, "session-1");
 
-        releaser.close();
+            releaser.close();
 
-        assertThat(released, equalTo(List.of("node-1/session-1")));
+            assertThat(released, equalTo(List.of("node-1/session-1")));
+            assertFalse(searchContext.isClosed());
+            expectThrows(IllegalStateException.class, () -> registry.acquire("session-1"));
+
+            fetchLease.close();
+
+            assertThat(registry.retainedSessions(), equalTo(0));
+            assertTrue(searchContext.isClosed());
+        }
+    }
+
+    /**
+     * Cancellation closes the registration asynchronously while compute drivers may still be running. The compute's
+     * own lease must keep the contexts alive until the compute completes, even though new leases are rejected as soon
+     * as the registration closes.
+     */
+    public void testRegistrationCloseDuringComputeKeepsContextsAliveUntilComputeLeaseCloses() {
+        SearchContext searchContext = createSearchContext();
+        AcquiredSearchContexts contexts = createContexts(searchContext);
+
+        RetainedSearchContextsRegistry.Handle registration = registry.register("session-1", contexts);
+        RetainedSearchContextsRegistry.Handle computeLease = registry.acquire("session-1");
+
+        // Simulates the cancellation listener firing mid-compute.
+        registration.close();
+
         assertFalse(searchContext.isClosed());
         expectThrows(IllegalStateException.class, () -> registry.acquire("session-1"));
 
-        fetchLease.close();
+        // Simulates the compute finishing and the response listener releasing its lease.
+        computeLease.close();
 
         assertThat(registry.retainedSessions(), equalTo(0));
         assertTrue(searchContext.isClosed());
