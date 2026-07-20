@@ -354,9 +354,10 @@ public class FromDatasetIT extends AbstractExternalDataSourceIT {
         registerDataSource("local_ds", Map.of());
         registerDataset("employees", "local_ds", csvFixture.toUri().toString(), Map.of("format", "csv"));
 
-        // mv_like is source-agnostic. Over a dataset there is no Lucene index and no EsQueryExec, so translatable()
-        // never gets a FieldAttribute to push and the compute-engine evaluator answers instead — the same evaluator
-        // the indexed path is proven to agree with by the differential in EsqlActionIT. "B*" keeps Bob only.
+        // mv_like is source-agnostic. Over a dataset there is no Lucene index, so the external-source pushdown layer
+        // (ParquetFilterPushdownSupport, which does not list mv_like) does not claim the filter and the compute-engine
+        // evaluator answers instead — the same evaluator the indexed path is proven to agree with by the differential
+        // in EsqlActionIT. "B*" keeps Bob only.
         try (var response = run(syncEsqlQueryRequest("FROM employees | WHERE mv_like(first_name, \"B*\") | SORT emp_no"), TIMEOUT)) {
             List<List<Object>> rows = getValuesList(response);
             assertThat(rows, hasSize(1));

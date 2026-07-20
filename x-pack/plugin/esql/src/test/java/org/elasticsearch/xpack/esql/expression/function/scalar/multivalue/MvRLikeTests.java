@@ -88,6 +88,11 @@ public class MvRLikeTests extends AbstractScalarFunctionTestCase {
         addCase(suppliers, ". does not match two characters", List.of("abc"), "a.", false);
         addCase(suppliers, ".* matches every value", List.of("anything"), ".*", true);
         addCase(suppliers, ".* matches the empty string", List.of(""), ".*", true);
+        // The empty pattern: RegExp("") accepts exactly the empty string, so mv_rlike matches "" and only "". Unlike
+        // mv_like's empty wildcard, this pushes to Lucene (a RegexpQuery("") matches the empty-string term), so pushed
+        // and evaluated agree — the one pattern where the two functions take different pushdown decisions.
+        addCase(suppliers, "empty pattern matches only the empty string", List.of(""), "", true);
+        addCase(suppliers, "empty pattern does not match a non-empty value", List.of("a"), "", false);
         addCase(suppliers, "escaped dot matches a literal dot", List.of("a.b"), "a\\.b", true);
         addCase(suppliers, "escaped dot does not match an arbitrary character", List.of("axb"), "a\\.b", false);
         addCase(suppliers, "pattern is case sensitive", List.of("Anna"), "ann.*", false);

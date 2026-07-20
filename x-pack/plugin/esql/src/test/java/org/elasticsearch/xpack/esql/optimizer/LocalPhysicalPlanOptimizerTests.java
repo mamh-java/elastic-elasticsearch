@@ -627,7 +627,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var plan = plannerOptimizer.plan("from test | where mv_in_range(salary, 25000, 30000)");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
         var expected = unscore(rangeQuery("salary").from(25000, true).to(30000, true));
-        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
+        assertThat(pushedQuery(plan).toString(), equalTo(expected.toString()));
     }
 
     /**
@@ -638,7 +638,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var plan = plannerOptimizer.plan("from test | where not mv_in_range(salary, 25000, 30000)");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
         var expected = boolQuery().mustNot(unscore(rangeQuery("salary").from(25000, true).to(30000, true)));
-        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
+        assertThat(pushedQuery(plan).toString(), equalTo(expected.toString()));
     }
 
     /**
@@ -650,7 +650,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var plan = plannerOptimizer.plan("from test | where mv_in_range(first_name, \"a\", \"m\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
         var expected = boolQuery().filter(unscore(rangeQuery("first_name").from("a", true).to("m", true)));
-        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
+        assertThat(pushedQuery(plan).toString(), equalTo(expected.toString()));
     }
 
     /**
@@ -662,7 +662,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         // (A text range would push over analyzed tokens, not the whole value, which is unsound under NOT.)
         var plan = plannerOptimizer.plan("from test | where mv_in_range(job, \"a\", \"z\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
-        assertThat(mvInRangeQuery(plan), nullValue());
+        assertThat(pushedQuery(plan), nullValue());
     }
 
     /**
@@ -672,7 +672,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
     public void testMvInRangeMultivaluedBoundNotPushed() {
         var plan = plannerOptimizer.plan("from test | where mv_in_range(salary, [25000, 26000], 30000)");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
-        assertThat(mvInRangeQuery(plan), nullValue());
+        assertThat(pushedQuery(plan), nullValue());
     }
 
     /**
@@ -687,7 +687,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
                 .to("2021-01-01T00:00:00.000Z", true)
                 .format("strict_date_optional_time")
         );
-        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
+        assertThat(pushedQuery(plan).toString(), equalTo(expected.toString()));
     }
 
     /** long, date_nanos and unsigned_long are YES types with no recheck net, so pin their per-type pushed-range shape. */
@@ -695,7 +695,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var analyzer = makeAnalyzer("mapping-all-types.json");
         var lng = plannerOptimizer.plan("from test | where mv_in_range(long, 10::long, 20::long)", IS_SV_STATS, analyzer);
         assertThat(lng.anyMatch(FilterExec.class::isInstance), is(false));
-        assertThat(mvInRangeQuery(lng).toString(), equalTo(unscore(rangeQuery("long").from(10, true).to(20, true)).toString()));
+        assertThat(pushedQuery(lng).toString(), equalTo(unscore(rangeQuery("long").from(10, true).to(20, true)).toString()));
 
         var dn = plannerOptimizer.plan(
             "from test | where mv_in_range(date_nanos, \"2020-01-01\"::date_nanos, \"2021-01-01\"::date_nanos)",
@@ -708,7 +708,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
                 .to("2021-01-01T00:00:00.000Z", true)
                 .format("strict_date_optional_time_nanos")
         );
-        assertThat(mvInRangeQuery(dn).toString(), equalTo(expectedDn.toString()));
+        assertThat(pushedQuery(dn).toString(), equalTo(expectedDn.toString()));
 
         var ul = plannerOptimizer.plan(
             "from test | where mv_in_range(unsigned_long, 10::unsigned_long, 20::unsigned_long)",
@@ -717,7 +717,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         );
         assertThat(ul.anyMatch(FilterExec.class::isInstance), is(false));
         var expectedUl = unscore(rangeQuery("unsigned_long").from(10, true).to(20, true));
-        assertThat(mvInRangeQuery(ul).toString(), equalTo(expectedUl.toString()));
+        assertThat(pushedQuery(ul).toString(), equalTo(expectedUl.toString()));
     }
 
     /**
@@ -731,7 +731,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         for (var field : List.of("double", "float", "scaled_float")) {
             var plan = plannerOptimizer.plan("from test | where mv_in_range(" + field + ", 1.0, 2.0)", IS_SV_STATS, analyzer);
             assertThat("field " + field + " must RECHECK (retain the FilterExec)", plan.anyMatch(FilterExec.class::isInstance), is(true));
-            assertThat("field " + field + " must still push a range pre-filter", mvInRangeQuery(plan), is(not(nullValue())));
+            assertThat("field " + field + " must still push a range pre-filter", pushedQuery(plan), is(not(nullValue())));
         }
     }
 
@@ -740,14 +740,14 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var analyzer = makeAnalyzer("mapping-all-types.json");
         var ip = plannerOptimizer.plan("from test | where mv_in_range(ip, \"1.1.1.1\"::ip, \"2.2.2.2\"::ip)", IS_SV_STATS, analyzer);
         assertThat(ip.anyMatch(FilterExec.class::isInstance), is(true));
-        assertThat(mvInRangeQuery(ip), is(not(nullValue())));
+        assertThat(pushedQuery(ip), is(not(nullValue())));
         var version = plannerOptimizer.plan(
             "from test | where mv_in_range(version, \"1.0.0\"::version, \"2.0.0\"::version)",
             IS_SV_STATS,
             analyzer
         );
         assertThat(version.anyMatch(FilterExec.class::isInstance), is(true));
-        assertThat(mvInRangeQuery(version), is(not(nullValue())));
+        assertThat(pushedQuery(version), is(not(nullValue())));
     }
 
     /**
@@ -774,7 +774,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
                 analyzer
             );
             assertThat("NOT over " + field + " must retain the filter", plan.anyMatch(FilterExec.class::isInstance), is(true));
-            assertThat("NOT over " + field + " must not push a range", mvInRangeQuery(plan), is(nullValue()));
+            assertThat("NOT over " + field + " must not push a range", pushedQuery(plan), is(nullValue()));
         }
     }
 
@@ -788,13 +788,13 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
     public void testMvInRangeExclusivePushdown() {
         var lower = plannerOptimizer.plan("from test | where mv_in_range(salary, 25000, 30000, {\"include_lower\": false})");
         assertThat(lower.anyMatch(FilterExec.class::isInstance), is(false));
-        assertThat(mvInRangeQuery(lower).toString(), equalTo(unscore(rangeQuery("salary").from(25000, false).to(30000, true)).toString()));
+        assertThat(pushedQuery(lower).toString(), equalTo(unscore(rangeQuery("salary").from(25000, false).to(30000, true)).toString()));
 
         var both = plannerOptimizer.plan(
             "from test | where mv_in_range(salary, 25000, 30000, {\"include_lower\": false, \"include_upper\": false})"
         );
         assertThat(both.anyMatch(FilterExec.class::isInstance), is(false));
-        assertThat(mvInRangeQuery(both).toString(), equalTo(unscore(rangeQuery("salary").from(25000, false).to(30000, false)).toString()));
+        assertThat(pushedQuery(both).toString(), equalTo(unscore(rangeQuery("salary").from(25000, false).to(30000, false)).toString()));
 
         // RECHECK type: the exclusive flags stay in the retained evaluator; the pushed range is the inclusive superset.
         var dbl = plannerOptimizer.plan(
@@ -804,7 +804,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         );
         assertThat(dbl.anyMatch(FilterExec.class::isInstance), is(true));
         assertThat(
-            mvInRangeQuery(dbl).toString(),
+            pushedQuery(dbl).toString(),
             equalTo(boolQuery().filter(unscore(rangeQuery("double").from(-0.0, true).to(1.0, true))).toString())
         );
 
@@ -815,7 +815,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         );
         assertThat(kw.anyMatch(FilterExec.class::isInstance), is(true));
         assertThat(
-            mvInRangeQuery(kw).toString(),
+            pushedQuery(kw).toString(),
             equalTo(boolQuery().filter(unscore(rangeQuery("keyword").from("a", true).to("m", true))).toString())
         );
     }
@@ -830,7 +830,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
     public void testMvLikePushdown() {
         var plan = plannerOptimizer.plan("from test | where mv_like(first_name, \"Ann*\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
-        var query = mvInRangeQuery(plan);
+        var query = pushedQuery(plan);
         assertThat(query, instanceOf(WildcardQueryBuilder.class));
         assertThat(query.toString(), equalTo(unscore(wildcardQuery("first_name", "Ann*")).toString()));
     }
@@ -844,7 +844,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var plan = plannerOptimizer.plan("from test | where not mv_like(first_name, \"Ann*\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
         var expected = boolQuery().mustNot(unscore(wildcardQuery("first_name", "Ann*")));
-        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
+        assertThat(pushedQuery(plan).toString(), equalTo(expected.toString()));
     }
 
     /**
@@ -855,7 +855,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
     public void testMvLikeTextNotPushed() {
         var plan = plannerOptimizer.plan("from test | where mv_like(job, \"Ann*\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
-        assertThat(mvInRangeQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
+        assertThat(pushedQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
     }
 
     /**
@@ -867,7 +867,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
     public void testMvLikeEmptyPatternNotPushed() {
         var plan = plannerOptimizer.plan("from test | where mv_like(first_name, \"\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
-        assertThat(mvInRangeQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
+        assertThat(pushedQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
     }
 
     /**
@@ -878,7 +878,7 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
     public void testMvRLikePushdown() {
         var plan = plannerOptimizer.plan("from test | where mv_rlike(first_name, \"Ann.*\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
-        var query = mvInRangeQuery(plan);
+        var query = pushedQuery(plan);
         assertThat(query, instanceOf(RegexpQueryBuilder.class));
         assertThat(query.toString(), equalTo(unscore(regexpQuery("first_name", "Ann.*")).toString()));
     }
@@ -888,10 +888,34 @@ public class LocalPhysicalPlanOptimizerTests extends AbstractLocalPhysicalPlanOp
         var plan = plannerOptimizer.plan("from test | where not mv_rlike(first_name, \"Ann.*\")");
         assertThat(plan.anyMatch(FilterExec.class::isInstance), is(false));
         var expected = boolQuery().mustNot(unscore(regexpQuery("first_name", "Ann.*")));
-        assertThat(mvInRangeQuery(plan).toString(), equalTo(expected.toString()));
+        assertThat(pushedQuery(plan).toString(), equalTo(expected.toString()));
     }
 
-    private static QueryBuilder mvInRangeQuery(PhysicalPlan plan) {
+    /**
+     * A text field is not pushed for mv_rlike either, for the same reason as mv_like: the exact subfield's ignore_above
+     * hole would make the pushed query under-match. Without this, deleting the TEXT gate in MvRegexMatch.translatable
+     * would silently push a wrong-answer RegexpQuery against job.raw with no red test.
+     */
+    public void testMvRLikeTextNotPushed() {
+        var plan = plannerOptimizer.plan("from test | where mv_rlike(job, \"Ann.*\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
+        assertThat(pushedQuery(plan), not(instanceOf(RegexpQueryBuilder.class)));
+    }
+
+    /**
+     * A calculated (non-FieldAttribute) argument cannot push — isPushableFieldAttribute requires a FieldAttribute. The
+     * FilterExec is retained and the evaluator answers. This also pins the premise of the pushed-vs-evaluator
+     * differential in EsqlActionIT: its `EVAL x = mv_like(...) | WHERE x` arm defeats pushdown precisely because `x` is
+     * a reference attribute, not a field — if a future optimizer inlined it, both differential arms would push and the
+     * differential would compare pushed against pushed, proving nothing. This test fails first if that ever changes.
+     */
+    public void testMvLikeCalculatedFieldNotPushed() {
+        var plan = plannerOptimizer.plan("from test | eval f = concat(first_name, \"x\") | where mv_like(f, \"Ann*\")");
+        assertThat(plan.anyMatch(FilterExec.class::isInstance), is(true));
+        assertThat(pushedQuery(plan), not(instanceOf(WildcardQueryBuilder.class)));
+    }
+
+    private static QueryBuilder pushedQuery(PhysicalPlan plan) {
         var esQueryExec = (EsQueryExec) plan.collectLeaves()
             .stream()
             .filter(EsQueryExec.class::isInstance)

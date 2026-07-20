@@ -2986,6 +2986,26 @@ public class VerifierTests extends ESTestCase {
         );
         // A malformed pattern is an analysis-time error, not a planner crash.
         defaultAnalyzer().error("FROM test | WHERE mv_like(first_name, \"foo\\\\\")", containsString("Invalid pattern"));
+        // A multivalued string constant is a string type and foldable, but is not a single pattern — it must be
+        // rejected rather than silently matched as its List.toString().
+        defaultAnalyzer().error(
+            "FROM test | WHERE mv_like(first_name, [\"a*\", \"b*\"])",
+            containsString("must be a single pattern string")
+        );
+    }
+
+    public void testMvRLikePattern() {
+        defaultAnalyzer().query("FROM test | WHERE mv_rlike(first_name, \"Ann.*\")");
+        defaultAnalyzer().error(
+            "FROM test | WHERE mv_rlike(first_name, last_name)",
+            containsString("second argument of [mv_rlike(first_name, last_name)] must be a constant")
+        );
+        // An unparseable regex is an analysis-time error — the probe in MvRLike.validatePattern exists for this.
+        defaultAnalyzer().error("FROM test | WHERE mv_rlike(first_name, \"(\")", containsString("Invalid pattern"));
+        defaultAnalyzer().error(
+            "FROM test | WHERE mv_rlike(first_name, [\"a.*\", \"b.*\"])",
+            containsString("must be a single pattern string")
+        );
     }
 
     public void testCategorizeOptionOutputFormat() {

@@ -1560,7 +1560,7 @@ public class EsqlActionIT extends AbstractEsqlIntegTestCase {
         prepareIndex(index).setSource("id", "j").get();  // field absent
         client().admin().indices().prepareRefresh(index).get();
 
-        List<String> patterns = List.of("ann.*", ".*na", "anna", "a.b", "a\\\\.b", "[abc]anana", "a+", ".*", "zzz.*");
+        List<String> patterns = List.of("ann.*", ".*na", "anna", "a.b", "a\\\\.b", "[abc]anana", "a+", ".*", "", "zzz.*");
         for (String pattern : patterns) {
             for (String polarity : List.of("", "not ")) {
                 String pushed = "from " + index + " | where " + polarity + "mv_rlike(v, \"" + pattern + "\") | keep id | sort id";
