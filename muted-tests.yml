@@ -346,6 +346,9 @@ tests:
 - class: org.elasticsearch.xpack.security.CoreWithSecurityClientYamlTestSuiteIT
   method: test {yaml=search.vectors/41_knn_search_byte_quantized_bfloat16/Knn search with mip}
   issue: https://github.com/elastic/elasticsearch/issues/154356
+- class: org.elasticsearch.xpack.security.CoreWithSecurityClientYamlTestSuiteIT
+  method: test {yaml=tsdb/40_search/aggs by index_mode}
+  issue: https://github.com/elastic/elasticsearch/issues/154375
 
 # Examples:
 #
