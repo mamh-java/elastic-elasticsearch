@@ -45,11 +45,15 @@ public class StructuralChangeDetector {
     // Local-deviation weighting: down-weight excursions relative to a rolling-median baseline with
     // a Cauchy M-estimator weight, so genuine regimes (small local residuals) keep full weight while
     // large residuals are progressively discounted on the structural fit and cost. Robustness is local,
-    // not relative to a global median. Cauchy weight scale (in robust-sigma units). ~2.385 is the
-    // classic 95%-efficiency tuning for the Cauchy/Lorentzian loss; residuals beyond a few sigma are
-    // heavily but never fully discounted.
+    // not relative to a global median. Cauchy weight scale (in robust-sigma units) with ~2.385 being
+    // the classic 95%-efficiency tuning for the Cauchy/Lorentzian loss; residuals beyond a few sigma
+    // are heavily but never fully discounted.
     private static final double CAUCHY_C = 2.385;
+    // The minimum weight for a point on the structural fit: a tiny weight floor avoids problematic all
+    // zero weight segments.
     private static final double MIN_WEIGHT = 1e-4;
+    // Half-window for the local-deviation weights so the MAD has enough points to be stable while still
+    // adapting between regimes (and a regime of the minimum length is not dominated by its neighbours).
     private static final int WEIGHT_HALF_WINDOW = 4;
     // Boundary window for the robust line used to residual the first/last WEIGHT_HALF_WINDOW points
     // (see Stats.applyBoundaryLineResiduals): wide enough for a stable Theil-Sen slope, local enough
