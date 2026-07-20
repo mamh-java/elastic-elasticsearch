@@ -172,26 +172,8 @@ public class StructuralChangeDetector {
         double breakPenalty = SEGMENT_PENALTY_BIAS * beta;
 
         // Prefix sums of the weighted moments. The profiled-variance cost of any candidate segment
-        // [tau, t) is then an O(1) combination of prefix[t] - prefix[tau] (see segmentResidualVariance).
-        double[] pW = new double[n + 1];
-        double[] pX = new double[n + 1];
-        double[] pXX = new double[n + 1];
-        double[] pY = new double[n + 1];
-        double[] pXY = new double[n + 1];
-        double[] pYY = new double[n + 1];
-        for (int i = 0; i < n; i++) {
-            double w = weights[i];
-            double x = i;
-            double y = values[i];
-            double wx = w * x;
-            double wy = w * y;
-            pW[i + 1] = pW[i] + w;
-            pX[i + 1] = pX[i] + wx;
-            pXX[i + 1] = pXX[i] + wx * x;
-            pY[i + 1] = pY[i] + wy;
-            pXY[i + 1] = pXY[i] + wx * y;
-            pYY[i + 1] = pYY[i] + wy * y;
-        }
+        // [tau, t) is then an O(1) combination of prefix[t] - prefix[tau] (see PrefixMoments).
+        PrefixMoments moments = PrefixMoments.of(values, weights);
 
         double[] opt = new double[n + 1];
         int[] bestPrev = new int[n + 1];
@@ -219,7 +201,7 @@ public class StructuralChangeDetector {
                 // only on the ratio rss/L and is immune to that. The rss floor keeps the log finite,
                 // which is all that is needed to keep a pristine segment from being rewarded - no
                 // separate short-segment penalty.
-                double segmentCost = segmentCost(tau, t, segmentLength, sigma2, pW, pX, pXX, pY, pXY, pYY);
+                double segmentCost = moments.cost(tau, t, sigma2);
                 double totalCost = opt[tau] + segmentCost + breakPenalty;
 
                 if (totalCost < minCost) {
@@ -236,7 +218,7 @@ public class StructuralChangeDetector {
                 int tau = R.get(i);
                 int segmentLength = t - tau;
                 if (segmentLength >= minSeg) {
-                    double segmentCost = segmentCost(tau, t, segmentLength, sigma2, pW, pX, pXX, pY, pXY, pYY);
+                    double segmentCost = moments.cost(tau, t, sigma2);
                     if (opt[tau] + segmentCost >= opt[t]) {
                         R.remove(i);
                         logger.trace(
@@ -265,63 +247,77 @@ public class StructuralChangeDetector {
         return changePoints.stream().mapToInt(i -> i).toArray();
     }
 
-    /** Profiled-variance Gaussian segment cost for {@code [tau, t)}, from the prefix-summed weighted moments. */
-    private static double segmentCost(
-        int tau,
-        int t,
-        int segmentLength,
-        double sigma2,
-        double[] pW,
-        double[] pX,
-        double[] pXX,
-        double[] pY,
-        double[] pXY,
-        double[] pYY
-    ) {
-        double residualVariance = segmentResidualVariance(tau, t, pW, pX, pXX, pY, pXY, pYY);
-        double rss = Stats.stabilizeRss(residualVariance * segmentLength, segmentLength, sigma2);
-        return (segmentLength / 2.0) * (Math.log(rss / segmentLength) + 1.0);
-    }
-
     /**
-     * Residual variance of the weighted degree-{@link #SEGMENT_DEGREE} (linear) fit over {@code [tau, t)},
-     * computed in O(1) from the prefix-summed weighted moments.
-     *
-     * This reproduces {@link LeastSquaresOnlineRegression#residualVariance()} for a degree-1 model: it forms
-     * the same normalised moment system, falls back to the mean-only total variance when the 2x2 system is
-     * ill-conditioned (the analytic analogue of that method's SVD condition guard, using the eigenvalues of
-     * the symmetric PSD moment matrix as its singular values), and clamps to {@code [0, total variance]}.
-     * Specialised to degree 1 because PELT only proposes constant/linear segments ({@code SEGMENT_DEGREE}).
+     * Prefix sums of the weighted moments of {@code (x=index, y=value)} over {@code [0, i)}, so the
+     * profiled-variance cost of any candidate segment {@code [tau, t)} is an O(1) combination of
+     * {@code prefix[t] - prefix[tau]}. Built once per PELT run and never mutated; grouping the six
+     * arrays behind one type keeps the cost/residual-variance helpers cohesive and removes the
+     * argument-ordering hazard of passing six same-typed {@code double[]} around.
      */
-    private static double segmentResidualVariance(
-        int tau,
-        int t,
-        double[] pW,
-        double[] pX,
-        double[] pXX,
-        double[] pY,
-        double[] pXY,
-        double[] pYY
-    ) {
-        double w = pW[t] - pW[tau];
-        if (w <= 0.0) {
-            return 0.0;
-        }
-        double meanX = (pX[t] - pX[tau]) / w;
-        double meanY = (pY[t] - pY[tau]) / w;
-        double varX = (pXX[t] - pXX[tau]) / w - meanX * meanX;
-        double covXY = (pXY[t] - pXY[tau]) / w - meanX * meanY;
-        double varY = (pYY[t] - pYY[tau]) / w - meanY * meanY;
+    private record PrefixMoments(double[] pW, double[] pX, double[] pXX, double[] pY, double[] pXY, double[] pYY) {
 
-        double var = Math.max(varY, LeastSquaresOnlineRegression.variancePrecisionFloor(meanY));
-        if (varX <= MIN_X_VARIANCE) {
-            return var; // no spread in x (a single point or zero weights): mean-only fit
+        static PrefixMoments of(double[] values, double[] weights) {
+            int n = values.length;
+            double[] pW = new double[n + 1];
+            double[] pX = new double[n + 1];
+            double[] pXX = new double[n + 1];
+            double[] pY = new double[n + 1];
+            double[] pXY = new double[n + 1];
+            double[] pYY = new double[n + 1];
+            for (int i = 0; i < n; i++) {
+                double w = weights[i];
+                double x = i;
+                double y = values[i];
+                double wx = w * x;
+                double wy = w * y;
+                pW[i + 1] = pW[i] + w;
+                pX[i + 1] = pX[i] + wx;
+                pXX[i + 1] = pXX[i] + wx * x;
+                pY[i + 1] = pY[i] + wy;
+                pXY[i + 1] = pXY[i] + wx * y;
+                pYY[i + 1] = pYY[i] + wy * y;
+            }
+            return new PrefixMoments(pW, pX, pXX, pY, pXY, pYY);
         }
-        double residual = varY - covXY * covXY / varX;
-        if (Double.isFinite(residual) == false) {
-            return var;
+
+        /** Profiled-variance Gaussian segment cost for {@code [tau, t)}. */
+        double cost(int tau, int t, double sigma2) {
+            int segmentLength = t - tau;
+            double rss = Stats.stabilizeRss(residualVariance(tau, t) * segmentLength, segmentLength, sigma2);
+            return (segmentLength / 2.0) * (Math.log(rss / segmentLength) + 1.0);
         }
-        return Math.max(0.0, Math.min(residual, var));
+
+        /**
+         * Residual variance of the weighted degree-{@link #SEGMENT_DEGREE} (linear) fit over {@code [tau, t)},
+         * computed in O(1) from the prefix-summed weighted moments.
+         *
+         * This reproduces {@link LeastSquaresOnlineRegression#residualVariance()} for a degree-1 model: it forms
+         * the same normalised moment system, falls back to the mean-only total variance when the 2x2 system is
+         * ill-conditioned (the analytic analogue of that method's SVD condition guard, using the eigenvalues of
+         * the symmetric PSD moment matrix as its singular values), and clamps to {@code [0, total variance]}.
+         * Specialised to degree 1 because PELT only proposes constant/linear segments ({@code SEGMENT_DEGREE}).
+         */
+        double residualVariance(int tau, int t) {
+            double w = pW[t] - pW[tau];
+            if (w <= 0.0) {
+                return 0.0;
+            }
+            double meanX = (pX[t] - pX[tau]) / w;
+            double meanY = (pY[t] - pY[tau]) / w;
+            double varX = (pXX[t] - pXX[tau]) / w - meanX * meanX;
+            double covXY = (pXY[t] - pXY[tau]) / w - meanX * meanY;
+            double varY = (pYY[t] - pYY[tau]) / w - meanY * meanY;
+
+            double var = Math.max(varY, LeastSquaresOnlineRegression.variancePrecisionFloor(meanY));
+            if (varX <= MIN_X_VARIANCE) {
+                return var; // no spread in x (a single point or zero weights): mean-only fit
+            }
+            double residual = varY - covXY * covXY / varX;
+            if (Double.isFinite(residual) == false) {
+                return var;
+            }
+            return Math.max(0.0, Math.min(residual, var));
+        }
     }
 
     /**
@@ -333,7 +329,7 @@ public class StructuralChangeDetector {
      * suppressed, even though it would be only a fraction of a sigma against the global scale (which is
      * dominated by any high-variance regime elsewhere). Leaving such a spike at full weight pulls a nearby
      * PELT boundary off the true change. The global cap keeps a short or noisy window from over-estimating
-     * the local scale and so under-suppressing. A tiny weight floor avoids degenerate all-zero-weight
+     * the local scale and so under-suppressing. A tiny weight floor avoids degenerate all zero weight
      * segments.
      */
     public static double[] localDeviationWeights(double[] values, int minSegmentLength) {
@@ -378,10 +374,10 @@ public class StructuralChangeDetector {
             double scale = Math.max(Stats.localRobustScale(residuals, lo, hi, maxAbs), scaleFloor);
             double u = Math.abs(residuals[i]) / scale;
             // Cauchy weight loss rho = log(1 + (u/c)^2) grows only logarithmically, so a gross excursion's
-            // contribution to the segment cost saturates rather than dominating it. That is what we want on
-            // heavy-tailed data: a frequent large-residual population is discounted, not hard-rejected
+            // contribution to the segment cost saturates rather than dominating it. That is what we want
+            // on heavy-tailed data: a frequent large residual population is discounted, not hard-rejected
             // (hard rejection collapses the effective sample and destabilises the fit). True point spikes
-            // are owned by the pulse stream regardless.
+            // are detected by the pulse stream regardless.
             double z = u / CAUCHY_C;
             weights[i] = Math.max(MIN_WEIGHT, 1.0 / (1.0 + z * z));
         }
