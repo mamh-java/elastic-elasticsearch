@@ -2,5 +2,5 @@
 
 ## Description
 
-Returns `true` when any value yielded by `field` matches `pattern`, using the same regular-expression syntax as `RLIKE`. `RLIKE` is a single-value scalar: applied to a multivalue field it emits a warning and returns `null`, so this is how you match a regular expression against a multivalue field. The pattern must match a value in full, as with `RLIKE`. A null or empty `field` returns `false`, and because the result is never null the predicate composes under `AND`/`OR`/`NOT`.
+Returns `true` when any value yielded by `field` matches `pattern`, using the same regular-expression syntax as `RLIKE`. The pattern must match a value in full, as with `RLIKE`. `RLIKE` is a single-value scalar: applied to a multivalue field it emits a warning and returns `null`, so this is how you match a regular expression against a multivalue field. A null or empty `field` returns `false`, and because the result is never null the predicate composes under `AND`/`OR`/`NOT`.
 

@@ -48,11 +48,12 @@ public class MvRLike extends MvRegexMatch {
     @FunctionInfo(
         returnType = "boolean",
         briefSummary = "Checks if any value of a multivalue field matches a regular expression.",
-        description = "Returns `true` when any value yielded by `field` matches `pattern`, using the same regular-expression "
-            + "syntax as `RLIKE`. `RLIKE` is a single-value scalar: applied to a multivalue field it emits a warning and returns "
-            + "`null`, so this is how you match a regular expression against a multivalue field. The pattern must match a value in "
-            + "full, as with `RLIKE`. A null or empty `field` returns `false`, and because the result is never null the predicate "
-            + "composes under `AND`/`OR`/`NOT`.",
+        description = """
+            Returns `true` when any value yielded by `field` matches `pattern`, using the same regular-expression syntax
+            as `RLIKE`. The pattern must match a value in full, as with `RLIKE`. `RLIKE` is a single-value scalar:
+            applied to a multivalue field it emits a warning and returns `null`, so this is how you match a regular
+            expression against a multivalue field. A null or empty `field` returns `false`, and because the result is
+            never null the predicate composes under `AND`/`OR`/`NOT`.""",
         examples = {
             @Example(file = "string", tag = "mv_rlike"),
             @Example(description = "Character classes work as they do in `RLIKE`:", file = "string", tag = "mv_rlike_class") },
