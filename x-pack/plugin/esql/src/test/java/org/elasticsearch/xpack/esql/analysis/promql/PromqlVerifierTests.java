@@ -105,12 +105,6 @@ public class PromqlVerifierTests extends ESTestCase {
     }
 
     public void testLogicalSetBinaryOperators() {
-        // `and` is supported between aggregated series (see the vector-matching csv-spec); between bare selectors it is rejected because
-        // there are no grouping labels to match on.
-        tsdb.error(
-            "PROMQL index=test step=5m foo and bar",
-            containsString("set operator [and] is only supported between aggregated series")
-        );
         // `unless` (anti-join) has no physical executor yet and is rejected outright.
         tsdb.error("PROMQL index=test step=5m foo unless bar", containsString("set operator [unless] is not supported at this time"));
         List.of("and", "unless").forEach(op -> {
@@ -383,11 +377,9 @@ public class PromqlVerifierTests extends ESTestCase {
         );
     }
 
-    public void testVectorMatchingRequiresAggregatedSeries() {
-        // Arithmetic vector matching (on/ignoring/group_left/group_right) is supported, but v0 joins on the operands'
-        // aggregation grouping labels, so both sides must be an aggregated instant vector (e.g. sum by (...)); bare
-        // selectors like these have no grouping labels to match on.
-        tsdb.error("PROMQL index=test step=5m foo / on(bar) baz", containsString("only supported between aggregated series"));
+    public void testVectorMatchingRequiresInstantVectors() {
+        // Mirrors Prometheus: on/ignoring describe how two labelsets match, and a scalar operand has no labelset.
+        tsdb.error("PROMQL index=test step=5m foo / on(bar) 1", containsString("vector matching only allowed between instant vectors"));
     }
 
     public void testNonScalarComparison() {

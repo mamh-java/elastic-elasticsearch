@@ -434,12 +434,7 @@ public class PromqlPlanBinaryOperatorTests extends AbstractPromqlPlanOptimizerTe
                 + "sum(rate(network.total_bytes_in{network.bytes_in =~\"1..\"}[10m])) / sum(rate(network.total_bytes_in[10m])) * 100)"
         );
         assertThat(plan.output().stream().map(Attribute::name).toList(), equalTo(List.of("value", "step")));
-
-        var outerAggs = plan.collect(Aggregate.class).stream().filter(a -> a instanceof TimeSeriesAggregate == false).toList();
-        assertThat("both rate sums should fold into single outer Aggregate", outerAggs, hasSize(1));
-
-        var aggregate = outerAggs.getFirst();
-        assertThat(aggregate.aggregates().stream().filter(e -> e.anyMatch(Sum.class::isInstance)).count(), equalTo(2L));
+        assertThat(plan.collect(EqJoin.class), hasSize(1));
     }
 
     public void testFunctionOnBinaryAggregations() {
@@ -565,16 +560,27 @@ public class PromqlPlanBinaryOperatorTests extends AbstractPromqlPlanOptimizerTe
         assertThat(plan.collect(EqJoin.class), hasSize(1));
     }
 
-    public void testVectorMatchOnLabelNotInGroupingReturns400() {
-        // on (pod) references a label that neither operand groups by (both are sum by (cluster)); silently dropping it would
-        // degrade the match to step-only and return wrong numbers, so it must 400.
-        VerificationException e = expectThrows(
-            VerificationException.class,
-            () -> planPromql(
-                "PROMQL index=k8s step=5m result=(sum by (cluster) (network.eth0.tx) / on (pod) sum by (cluster) (network.eth0.rx))"
-            )
+    public void testVectorMatchOnLabelAbsentFromBothOperandsJoinsOnStep() {
+        // on (pod) references a label neither operand exposes (both are sum by (cluster)). PromQL matches an absent
+        // label as the empty string on both sides, so it cannot discriminate: the key set degrades to step only, and a
+        // resulting many-to-many match surfaces as the runtime's unique-build-key error, exactly like Prometheus.
+        var plan = planPromql(
+            "PROMQL index=k8s step=5m result=(sum by (cluster) (network.eth0.tx) / on (pod) sum by (cluster) (network.eth0.rx))"
         );
-        assertThat(e.getMessage(), containsString("on(...) label [pod] must be a grouping label of both operands"));
+        var joins = plan.collect(EqJoin.class);
+        assertThat(joins, hasSize(1));
+        assertThat(joins.getFirst().leftFields().stream().map(Attribute::name).toList(), containsInAnyOrder("step"));
+    }
+
+    public void testVectorMatchOnLabelWithOpaqueOperandsJoins() {
+        // Both operands aggregate `without`, packing their identity into `_timeseries` with no label columns of their
+        // own; the on (cluster) demand makes each operand materialize `cluster` alongside its packed grouping.
+        var plan = planPromql(
+            "PROMQL index=k8s step=5m result=(sum without (pod) (network.eth0.tx) / on (cluster) sum without (pod) (network.eth0.rx))"
+        );
+        var joins = plan.collect(EqJoin.class);
+        assertThat(joins, hasSize(1));
+        assertThat(joins.getFirst().leftFields().stream().map(Attribute::name).toList(), containsInAnyOrder("step", "cluster"));
     }
 
     public void testVectorMatchNestedInScalarArithmetic() {

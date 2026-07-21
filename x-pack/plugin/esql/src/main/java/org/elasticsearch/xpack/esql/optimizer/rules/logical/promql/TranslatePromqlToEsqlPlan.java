@@ -101,6 +101,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -130,9 +131,9 @@ import static org.elasticsearch.xpack.esql.optimizer.rules.logical.promql.Promql
  *                 \_ TimeSeriesAggregate[sum(rate(value)), groupBy=[step, cluster]]
  * </pre>
  * Mechanism: a {@link Translation} instance per command; recursive descent via {@code doTranslateNode()} where every AST
- * node produces a {@link IntermediateResult} its parent composes, and the top-level forms (single translateIntermediate, {@code or} union,
- * vector-match join) stitch finished tables. A vector-match operand is translated by a sub-{@link Translation} against
- * its own forked command, so the two join inputs share no attribute ids by construction.
+ * node produces a {@link IntermediateResult} its parent composes, and the top-level forms (single translateIntermediate, {@code or}
+ * union, vector-match join) stitch finished tables. A vector-match operand is translated by a sub-{@link Translation}
+ * against its own forked command, so the two join inputs share no attribute ids by construction.
  */
 public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.ParameterizedAnalyzerRule<PromqlCommand, AnalyzerContext> {
     // Sentinel bounds for open-ended range queries (PROMQL step=X without explicit start/end): TStep requires explicit bounds,
@@ -194,7 +195,7 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
             return new IntermediateResult(plan, value, pendingFilter, labels, step, kind);
         }
 
-        /** The value as a defined column; only valid on a finished table (translateIntermediate or join result). */
+        /** The value as a defined column; only valid on a finished table. */
         Attribute valueColumn() {
             return (Attribute) value;
         }
@@ -263,14 +264,14 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
         LogicalPlan translateFinal() {
             // A vector-matched arithmetic/comparison operator (a <op> on(...)/ignoring(...) [group_left/right] b) or an
             // `and` set operator matches two series pipelines on shared keys, so - like a top-level `or` union - it is
-            // emitted as its own top-level combining node (an EqJoin) rather than folded into a single doTranslateAgg; nested
+            // emitted as its own top-level combining node (an EqJoin) rather than folded into a single aggregate; nested
             // matches are handled inside doTranslateBinaryOp instead.
             if (cmd.promqlPlan() instanceof VectorBinaryOperator op && isJoinOperator(op)) {
-                return doTranslateFinal(translateJoin(op).plan(), false);
+                return doTranslateFinal(doTranslateBinOpHashJoin(op).plan(), false);
             }
 
             // `or` is the only set operator that adds rows (more series), requiring a top-level multi-branch UnionAll that
-            // cannot compose as a single-value sub-expression; `and`/`unless` translateFinal as joins inside doTranslateNode.
+            // cannot compose as a single-value sub-expression; `and`/`unless` translate as joins inside doTranslateNode.
             // PromQL `or` is left-associative, so flatten the top-level chain into independent branches.
             List<LogicalPlan> branches = new ArrayList<>();
             flattenUnion(cmd.promqlPlan(), branches);
@@ -624,14 +625,14 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
 
         /**
          * Vector-vector operators are vector matches - bare ones match 1:1 on the shared labels, exactly like an empty
-         * {@code ignoring()} - and go through the {@link #join} over independently compiled operands. A scalar operand
+         * {@code ignoring()} - and go through the {@link #doJoin} over independently compiled operands. A scalar operand
          * has no labelset to match; it applies elementwise, composed as an expression over the vector side's frame.
          * A nested {@code or} keeps the legacy expression-merge path.
          */
         private IntermediateResult doTranslateBinaryOp(VectorBinaryOperator binaryOp) {
             boolean nestedUnion = binaryOp instanceof VectorBinarySet set && set.op() == VectorBinarySet.SetOp.UNION;
             if (nestedUnion == false && (hasVectorMatch(binaryOp) || (isScalar(binaryOp.left()) || isScalar(binaryOp.right())) == false)) {
-                return translateJoin(binaryOp);
+                return doTranslateBinOpHashJoin(binaryOp);
             }
             return doTranslateMergeableBinaryOp(binaryOp);
         }
@@ -719,22 +720,44 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
 
         /**
          * Translates a vector-matched join operator into an {@link EqJoin}, mirroring {@link #doTranslateUnion}: each
-         * operand becomes an independent, self-contained series translateIntermediate, joined on shared {@code step} + label keys, and
+         * operand becomes an independent, self-contained series pipeline, joined on shared {@code step} + label keys, and
          * the result value is computed on the joined rows. The operators differ only in what the join keeps and how the
          * value is computed: arithmetic/comparison copy the build's value as an added field and compute
          * {@code left <op> right} (filter-mode comparison keeps the left value and filters); {@code and} is a semi-join
          * that reduces the build to its distinct keys, adds no build columns, and keeps the left value.
          */
-        private IntermediateResult translateJoin(VectorBinaryOperator binaryOp) {
-            // Each operand table already carries a distinct value column name assigned in translateJoinOperand. Matched
+        private IntermediateResult doTranslateBinOpHashJoin(VectorBinaryOperator binaryOp) {
+            // Each operand table already carries a distinct value column name assigned in doTranslateJoinOperand. Matched
             // operands declare their labels through their own inner aggregates and compile unconstrained; bare 1:1
             // operands inherit the demanded scope so they materialize the label columns the surrounding query groups by.
             InheritedAttributes demanded = hasVectorMatch(binaryOp) ? InheritedAttributes.unconstrained() : scope;
-            return join(translateJoinOperand(binaryOp.left(), demanded), translateJoinOperand(binaryOp.right(), demanded), binaryOp);
+            // Match keys must exist as concrete join key columns, but an operand's identity may be opaque (a bare
+            // selector or a `without` aggregation packs it into `_timeseries`); demand the key labels - and the group
+            // modifier labels the result must carry - from both operand compilations so each materializes them where
+            // its aggregation shape allows.
+            if (hasVectorMatch(binaryOp)) {
+                var required = new ArrayList<>(matchKeyNames(binaryOp.match(), binaryOp.left(), binaryOp.right()));
+                required.addAll(binaryOp.match().groupingLabels());
+                demanded = demanded.including(sourceLabels(required));
+            }
+            return doJoin(doTranslateJoinOperand(binaryOp.left(), demanded), doTranslateJoinOperand(binaryOp.right(), demanded), binaryOp);
+        }
+
+        /** The concrete source dimensions backing the given label names; a label with no backing dimension resolves to nothing. */
+        private List<Attribute> sourceLabels(Collection<String> names) {
+            List<Attribute> dimensions = concreteDimensions(cmd.child().output());
+            List<Attribute> labels = new ArrayList<>(names.size());
+            for (String name : names) {
+                Attribute dimension = findByLabelName(dimensions, name);
+                if (dimension != null) {
+                    labels.add(dimension);
+                }
+            }
+            return labels;
         }
 
         /** The join combinator over two independently compiled operand tables. */
-        private IntermediateResult join(IntermediateResult lhs, IntermediateResult rhs, VectorBinaryOperator binaryOp) {
+        private IntermediateResult doJoin(IntermediateResult lhs, IntermediateResult rhs, VectorBinaryOperator binaryOp) {
             // A bare operator is 1:1 vector matching on all shared labels: an empty ignoring().
             var match = binaryOp.match() != null
                 ? binaryOp.match()
@@ -742,45 +765,93 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
             // The "one"/build side must have unique keys and becomes the join's right; group_right swaps the sides.
             IntermediateResult probe = match.grouping() == VectorMatch.Joining.RIGHT ? rhs : lhs;
             IntermediateResult build = match.grouping() == VectorMatch.Joining.RIGHT ? lhs : rhs;
+            LogicalPlan probePlan = probe.plan();
+            LogicalPlan buildPlan = build.plan();
 
-            // Equi-join keys: step + the on/ignoring label columns present on both operands. An on(...) label missing from
-            // either side is an error; an ignoring(...) non-shared label simply does not participate.
+            // Equi-join keys: step + the match key labels (see matchKeyNames) present on the operands. A key label may
+            // have no column on an operand (grouped away by its aggregation, or not a dimension of the source at all);
+            // PromQL matches an absent label as the empty string, so a label absent from both sides cannot discriminate
+            // and drops out of the key set, while a label absent from one side is null-filled there and matches only
+            // what the other side leaves null. Many-to-many degradations this permits (e.g. on() over multi-series
+            // operands) surface as the runtime's unique-build-key error, mirroring Prometheus's execution-time error.
+            List<String> keyNames = matchKeyNames(match, binaryOp.left(), binaryOp.right());
             List<Attribute> probeFields = new ArrayList<>(List.of(probe.step()));
             List<Attribute> buildFields = new ArrayList<>(List.of(build.step()));
-            if (match.filter() == VectorMatch.Filter.ON) {
-                for (String label : match.filterLabels()) {
-                    Attribute p = findByLabelName(probe.plan().output(), label);
-                    Attribute b = findByLabelName(build.plan().output(), label);
-                    if (p == null || b == null) {
-                        throw new VerificationException(
-                            "vector matching on(...) label [{}] must be a grouping label of both operands",
-                            label
-                        );
+            List<Alias> absentLabels = new ArrayList<>();
+            if (match.filter() != VectorMatch.Filter.NONE) {
+                List<Alias> probeFillers = new ArrayList<>();
+                List<Alias> buildFillers = new ArrayList<>();
+                for (String label : keyNames) {
+                    Attribute probeKey = findByLabelName(probePlan.output(), label);
+                    Attribute buildKey = findByLabelName(buildPlan.output(), label);
+                    if (probeKey == null && buildKey == null) {
+                        // on(...) declares the label in the operator's output shape (see VectorBinaryOperator.output),
+                        // so surface it as a null result column - PromQL's empty value on every matched pair. An
+                        // ignoring(...) key comes from an operand's declared labels, so at least one side resolves.
+                        if (match.filter() == VectorMatch.Filter.ON) {
+                            absentLabels.add(new Alias(cmd.source(), label, new Literal(cmd.source(), null, DataType.KEYWORD)));
+                        }
+                        continue;
                     }
-                    probeFields.add(p);
-                    buildFields.add(b);
+                    if (probeKey == null) {
+                        probeKey = nullKey(label, buildKey.dataType(), probeFillers);
+                    }
+                    if (buildKey == null) {
+                        buildKey = nullKey(label, probeKey.dataType(), buildFillers);
+                    }
+                    probeFields.add(probeKey);
+                    buildFields.add(buildKey);
+                }
+                if (probeFillers.isEmpty() == false) {
+                    probePlan = new Eval(cmd.source(), probePlan, probeFillers);
+                }
+                if (buildFillers.isEmpty() == false) {
+                    buildPlan = new Eval(cmd.source(), buildPlan, buildFillers);
                 }
             } else {
                 for (Attribute probeAttr : probe.labelColumns().subtract(a -> match.filterLabels().contains(a.name()))) {
-                    Attribute buildAttr = findByLabelName(build.plan().output(), probeAttr.name());
+                    Attribute buildAttr = findByLabelName(buildPlan.output(), probeAttr.name());
                     if (buildAttr != null) {
                         probeFields.add(probeAttr);
                         buildFields.add(buildAttr);
                     }
                 }
             }
-            // The build's non-key columns (its value plus any group-modifier labels), copied onto surviving probe rows by
-            // a full join; the semi-join adds none.
-            List<Attribute> added = new ArrayList<>(AttributeSet.of(build.plan().output()).subtract(AttributeSet.of(buildFields)));
+            // The build columns copied onto surviving probe rows by the full join: its value plus the group modifier
+            // labels (group_left/group_right (labels...)). The rest of the build's shape - including an opaque packed
+            // identity - stays behind, matching PromQL where the result carries the probe side's labelset; the
+            // semi-join adds none. A copied label overwrites the probe's own column of the same name (PromQL group
+            // modifier semantics); one the build cannot produce is left to the probe's own column, or null-filled when
+            // neither side has it. A modifier label that is also a join key is already equal on the probe side. The
+            // list follows the build's output order, which is also the physical layout the join operator copies from.
+            var copiedBuilder = AttributeSet.builder().add(build.valueColumn());
+            var shadowedBuilder = AttributeSet.builder();
+            for (String label : match.groupingLabels()) {
+                if (keyNames.contains(label)) {
+                    continue;
+                }
+                Attribute copied = findByLabelName(buildPlan.output(), label);
+                Attribute own = findByLabelName(probePlan.output(), label);
+                if (copied != null) {
+                    copiedBuilder.add(copied);
+                    if (own != null) {
+                        shadowedBuilder.add(own);
+                    }
+                } else if (own == null) {
+                    absentLabels.add(new Alias(cmd.source(), label, new Literal(cmd.source(), null, DataType.KEYWORD)));
+                }
+            }
+            var copiedColumns = copiedBuilder.build();
+            List<Attribute> added = new ArrayList<>(buildPlan.output().stream().filter(copiedColumns::contains).toList());
 
             // lhs/rhs are in operand order, so the result reads left <op> right directly regardless of the group_right
-            // swap. Both values are carried through the join output and materialised by the Eval finishJoin puts on top.
+            // swap. Both values are carried through the join output and materialised by the value Eval placed on top below.
             Expression lhsExpr = new ToDouble(lhs.value().source(), lhs.value());
             Expression rhsExpr = new ToDouble(rhs.value().source(), rhs.value());
 
             // Full join for arithmetic/comparison; 1:1 unless group_left/group_right declared a "many" side.
             boolean oneToOne = match.grouping() == VectorMatch.Joining.NONE;
-            EqJoin fullJoin = new EqJoin(cmd.source(), probe.plan(), build.plan(), probeFields, buildFields, added, oneToOne);
+            EqJoin fullJoin = new EqJoin(cmd.source(), probePlan, buildPlan, probeFields, buildFields, added, oneToOne);
 
             // What each operator keeps and computes: `and` is a semi-join over the build's distinct keys (EqJoin rejects
             // duplicate build keys; many probe rows may share one, so it is not 1:1) whose result is the left value,
@@ -792,8 +863,8 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
             switch (binaryOp) {
                 case VectorBinarySet ignored -> {
                     var keys = new ArrayList<NamedExpression>(buildFields);
-                    var distinct = new Aggregate(build.plan().source(), build.plan(), new ArrayList<>(keys), keys);
-                    join = new EqJoin(cmd.source(), probe.plan(), distinct, probeFields, buildFields, List.of(), false);
+                    var distinct = new Aggregate(buildPlan.source(), buildPlan, new ArrayList<>(keys), keys);
+                    join = new EqJoin(cmd.source(), probePlan, distinct, probeFields, buildFields, List.of(), false);
                 }
                 case VectorBinaryComparison comparison -> {
                     Expression compare = comparison.op().asFunction().create(binaryOp.source(), lhsExpr, rhsExpr, configuration());
@@ -808,12 +879,14 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
                     .create(binaryOp.source(), lhsExpr, rhsExpr, configuration());
             }
 
-            // Re-id the surviving step to the command step id so a nested outer doTranslateAgg can group by it and the command
+            // Re-id the surviving step to the command step id so a nested outer aggregate can group by it and the command
             // projection finds it. The value gets a fresh id (not the command's): a nested outer op reuses the command
             // value id for its own result, so sharing it would collide in the execution layout; re-aliased back by name.
             Alias stepAlias = new Alias(probe.step().source(), probe.step().name(), probe.step(), cmd.stepId());
             Alias valueAlias = new Alias(binaryOp.source(), cmd.valueColumnName(), result, new NameId());
-            LogicalPlan plan = new Eval(cmd.source(), join, List.of(valueAlias, stepAlias));
+            List<Alias> evalFields = new ArrayList<>(List.of(valueAlias, stepAlias));
+            evalFields.addAll(absentLabels);
+            LogicalPlan plan = new Eval(cmd.source(), join, evalFields);
             if (filter != null) {
                 plan = new Filter(binaryOp.source(), plan, filter);
             }
@@ -822,7 +895,8 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
             // single unambiguous ones for the null filter and the command projection; keep the join keys/labels. The
             // surviving match labels stay exposed so an outer aggregation (nested case) knows what to group by.
             List<Attribute> projected = new ArrayList<>(List.of(valueAlias.toAttribute(), stepAlias.toAttribute()));
-            var operandColumns = AttributeSet.of(probe.valueColumn(), build.valueColumn(), probe.step());
+            absentLabels.forEach(a -> projected.add(a.toAttribute()));
+            var operandColumns = AttributeSet.of(probe.valueColumn(), build.valueColumn(), probe.step()).combine(shadowedBuilder.build());
             projected.addAll(AttributeSet.of(join.output()).subtract(operandColumns));
             plan = new Project(cmd.source(), plan, projected);
             // Matched joins expose the labels the match declares; a bare join's AST shape is unreliable (operands differing
@@ -838,6 +912,13 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
             );
         }
 
+        /** A null-valued stand-in for a join key label an operand cannot produce: PromQL's "absent label is empty". */
+        private Attribute nullKey(String label, DataType type, List<Alias> fillers) {
+            Alias filler = new Alias(cmd.source(), label, new Literal(cmd.source(), null, type));
+            fillers.add(filler);
+            return filler.toAttribute();
+        }
+
         /**
          * Translates one operand of a vector-matched binary operator with a sub-{@link Translation} against its own
          * independent copy of the source, so the two join operands share no attribute ids by construction (a join
@@ -845,11 +926,14 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
          * shared map into a disjoint id-space; the fork also gets a unique value column name so both operands carry
          * distinct names into the join.
          */
-        private IntermediateResult translateJoinOperand(LogicalPlan operand, InheritedAttributes demanded) {
+        private IntermediateResult doTranslateJoinOperand(LogicalPlan operand, InheritedAttributes demanded) {
             Map<NameId, NameId> ids = new HashMap<>();
             LogicalPlan forkedChild = cmd.child().transformExpressionsDown(Expression.class, e -> reidExpr(e, ids));
             LogicalPlan forkedFragment = operand.transformExpressionsDown(Expression.class, e -> reidExpr(e, ids));
             Expression forkedTimestamp = cmd.timestamp() == null ? null : reidExpr(cmd.timestamp(), ids);
+            // The demand names columns of this operand's compilation unit: re-id it through the same map so a demanded
+            // source dimension binds to the forked relation's attribute instead of dangling in the original id-space.
+            InheritedAttributes forkedDemand = demanded.mapped(a -> (Attribute) reidExpr(a, ids));
             PromqlCommand fork = new PromqlCommand(
                 cmd.source(),
                 forkedChild,
@@ -868,7 +952,7 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
                 fork.promqlPlan(),
                 fork.stepId(),
                 fork.valueId(),
-                demanded
+                forkedDemand
             );
         }
 
@@ -1242,6 +1326,27 @@ public final class TranslatePromqlToEsqlPlan extends AnalyzerRules.Parameterized
     /** A binary operator translated to an {@link EqJoin}: arithmetic/comparison with on/ignoring matching, or {@code and}. */
     private static boolean isJoinOperator(VectorBinaryOperator op) {
         return op instanceof VectorBinarySet set ? set.op() == VectorBinarySet.SetOp.INTERSECT : hasVectorMatch(op);
+    }
+
+    /**
+     * The label names a vector match keys on. {@code on(...)} names them explicitly; {@code ignoring(...)} keys on
+     * every label the operands declare, minus the ignored ones - an opaque operand (a bare selector or a `without`
+     * aggregation) declares only its packed {@code _timeseries} identity and contributes no names, so the other
+     * side's declared labels define the key set. Two opaque ignoring operands therefore key on {@code step} alone;
+     * matching them on the packed identity itself is not supported yet.
+     */
+    private static List<String> matchKeyNames(VectorMatch match, LogicalPlan left, LogicalPlan right) {
+        if (match.filter() == VectorMatch.Filter.ON) {
+            return List.copyOf(match.filterLabels());
+        }
+        List<String> names = new ArrayList<>();
+        for (Attribute attr : PromqlAttributesTranslationContext.union(left.output(), right.output())) {
+            String name = canonicalName(attr);
+            if (isTimeSeriesAttributeName(attr.name()) == false && match.filterLabels().contains(name) == false) {
+                names.add(name);
+            }
+        }
+        return names;
     }
 
     /** Whether the node evaluates to a PromQL scalar (one value per step, no labelset to vector-match on). */

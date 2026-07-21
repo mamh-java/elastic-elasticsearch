@@ -178,16 +178,36 @@ public class PromqlVectorMatchingIT extends RestEsqlTestCase {
         );
     }
 
-    public void testVectorMatchingRequiresAggregatedSeries() throws IOException {
-        assertPromqlError("PROMQL index=k8s step=10m network.eth0.tx / on (cluster) network.eth0.rx", "aggregated series");
+    public void testVectorMatchingBetweenRawSelectors() throws IOException {
+        // Bare selectors are opaque operands: (cluster, pod) is materialized from `_timeseries` on both sides and the
+        // join runs per series. tx(prod,one)=409, rx(prod,one)=440 at this step.
+        assertRows(
+            "PROMQL index=k8s step=10m result=(network.eth0.tx / on (cluster, pod) network.eth0.rx) "
+                + "| WHERE cluster == \"prod\" AND pod == \"one\" AND step == \"2024-05-10T00:10:00.000Z\" "
+                + "| KEEP result, cluster, pod, step",
+            List.of(List.of(0.9295454545454546, "prod", "one", "2024-05-10T00:10:00.000Z"))
+        );
     }
 
-    public void testOnLabelMustBeGroupingLabelOfBothOperands() throws IOException {
-        assertPromqlError(
-            "PROMQL index=k8s step=10m "
-                + "sum by (cluster) (network.eth0.tx) / on (cluster, pod) group_left (pod) "
-                + "sum by (cluster, pod) (network.eth0.rx)",
-            "vector matching on(...) label [pod] must be a grouping label of both operands"
+    public void testOnLabelAbsentFromOneOperandMatchesNothing() throws IOException {
+        // The probe side groups only by cluster, so its pod is PromQL's empty string; every build series carries a
+        // concrete pod. Nothing matches - the query degrades gracefully to an empty result instead of failing to plan.
+        assertRows(
+            "PROMQL index=k8s step=10m result=(sum by (cluster) (network.eth0.tx) / on (cluster, pod) group_left (pod) "
+                + "sum by (cluster, pod) (network.eth0.rx)) "
+                + "| KEEP result, cluster, pod, step",
+            List.of()
+        );
+    }
+
+    public void testOnLabelWithOpaqueWithoutOperands() throws IOException {
+        // `without` operands pack their identity into _timeseries with no label columns; on (cluster) demands the
+        // label back as a concrete column. Same numbers as the equivalent sum by (cluster) match.
+        assertRows(
+            "PROMQL index=k8s step=10m result=(sum without (pod, region) (network.eth0.tx) / on (cluster) "
+                + "sum without (pod, region) (network.eth0.rx)) "
+                + "| WHERE cluster == \"prod\" AND step == \"2024-05-10T00:10:00.000Z\" | KEEP result, cluster, step",
+            List.of(List.of(1.103305785123967, "prod", "2024-05-10T00:10:00.000Z"))
         );
     }
 

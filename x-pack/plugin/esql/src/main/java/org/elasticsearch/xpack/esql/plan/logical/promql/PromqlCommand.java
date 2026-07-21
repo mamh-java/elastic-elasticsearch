@@ -506,17 +506,9 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, Timestam
                     // separately by verifySetOperator below.
                     if (binaryOperator.match() != VectorMatch.NONE
                         && (binaryOperator instanceof VectorBinaryArithmetic || binaryOperator instanceof VectorBinaryComparison)) {
-                        if (isAggregated(binaryOperator.left()) == false || isAggregated(binaryOperator.right()) == false) {
-                            // v0 joins the two operands on their aggregation grouping labels, so both must be an aggregated instant
-                            // vector (e.g. sum by (...)); bare selectors and per-series functions have no grouping labels to match on.
-                            failures.add(
-                                fail(
-                                    lp,
-                                    "vector matching with on/ignoring/group_left/group_right is only supported between aggregated "
-                                        + "series (e.g. sum by (...)) at this time [{}]",
-                                    lp.sourceText()
-                                )
-                            );
+                        if (PromqlPlan.returnsScalar(binaryOperator.left()) || PromqlPlan.returnsScalar(binaryOperator.right())) {
+                            // Mirrors Prometheus: on/ignoring describe how two labelsets match, and a scalar has none.
+                            failures.add(fail(lp, "vector matching only allowed between instant vectors [{}]", lp.sourceText()));
                         }
                     }
                     if (binaryOperator instanceof VectorBinaryComparison comp) {
@@ -545,7 +537,14 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, Timestam
                     if (binaryOperator instanceof VectorBinarySet setOp) {
                         verifySetOperator(failures, setOp, topLevelUnions.contains(setOp), root.get());
                     }
-                    if (usesWithoutGrouping(binaryOperator.left()) || usesWithoutGrouping(binaryOperator.right())) {
+                    // A WITHOUT-shaped operand is opaque: its identity is packed into `_timeseries` with no label
+                    // columns of its own. on(...)/ignoring(...) matching lowers its keys to concrete labels demanded
+                    // from both operand compilations, so opaque operands are supported; the unmatched (merge/bare)
+                    // forms match on the operands' explicit grouping labels and cannot see into the packed identity.
+                    boolean labelMatched = binaryOperator.match() != VectorMatch.NONE
+                        && binaryOperator.match().filter() != VectorMatch.Filter.NONE;
+                    if (labelMatched == false
+                        && (usesWithoutGrouping(binaryOperator.left()) || usesWithoutGrouping(binaryOperator.right()))) {
                         failures.add(fail(lp, "binary expressions with WITHOUT are not supported at this time [{}]", lp.sourceText()));
                     }
                     if (hasSourceBackedExpression(binaryOperator.left())
@@ -607,19 +606,11 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, Timestam
                 }
             }
             case INTERSECT -> {
-                // `and` (optionally with on/ignoring) is translated to a top-level INNER equi-join (a semi-join) between two aggregated
-                // vectors, mirroring arithmetic/comparison vector matching.
+                // `and` (optionally with on/ignoring) is translated to a top-level INNER equi-join (a semi-join),
+                // mirroring arithmetic/comparison vector matching.
                 if (root == false) {
                     failures.add(
                         fail(setOp, "set operator [and] is only supported at the top-level at this time [{}]", setOp.sourceText())
-                    );
-                } else if (isAggregated(setOp.left()) == false || isAggregated(setOp.right()) == false) {
-                    failures.add(
-                        fail(
-                            setOp,
-                            "set operator [and] is only supported between aggregated series (e.g. sum by (...)) at this time [{}]",
-                            setOp.sourceText()
-                        )
                     );
                 }
             }
@@ -628,11 +619,6 @@ public class PromqlCommand extends UnaryPlan implements TelemetryAware, Timestam
                 fail(setOp, "set operator [{}] is not supported at this time [{}]", setOp.op().keyword(), setOp.sourceText())
             );
         }
-    }
-
-    /** Whether an operand is an across-series aggregation (e.g. {@code sum by (...)}), whose grouping labels vector matching joins on. */
-    private static boolean isAggregated(LogicalPlan operand) {
-        return operand instanceof AcrossSeriesAggregate;
     }
 
     /**

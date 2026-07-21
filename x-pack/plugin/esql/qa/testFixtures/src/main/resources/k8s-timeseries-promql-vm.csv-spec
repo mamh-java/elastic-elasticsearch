@@ -52,6 +52,27 @@ ratio:double       | step:datetime            | cluster:keyword
 0.9903225806451613 | 2024-05-10T00:30:00.000Z | staging
 ;
 
+// on(cluster) with opaque operands: `without` packs each operand's identity into _timeseries with no label columns
+// of its own; the on(cluster) demand materializes the label as a concrete column to key the join on. The k8s label
+// universe is (cluster, pod, region), so `without (pod, region)` matches vector_match_on_cluster exactly.
+vector_match_on_cluster_opaque_operands
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m ratio=(sum without (pod, region) (network.eth0.tx) / on (cluster) sum without (pod, region) (network.eth0.rx))
+| KEEP ratio, step, cluster
+| SORT cluster, step;
+
+ratio:double       | step:datetime            | cluster:keyword
+1.103305785123967  | 2024-05-10T00:10:00.000Z | prod
+1.1411513859275053 | 2024-05-10T00:20:00.000Z | prod
+1.16072408118486   | 2024-05-10T00:30:00.000Z | prod
+0.9730554143365532 | 2024-05-10T00:10:00.000Z | qa
+1.219419184511587  | 2024-05-10T00:20:00.000Z | qa
+1.1905023332418336 | 2024-05-10T00:30:00.000Z | qa
+0.9343173431734317 | 2024-05-10T00:10:00.000Z | staging
+1.0426854537919603 | 2024-05-10T00:20:00.000Z | staging
+0.9903225806451613 | 2024-05-10T00:30:00.000Z | staging
+;
+
 // INNER semantics: the denominator only has cluster=prod, so qa/staging have no match and are dropped.
 vector_match_inner_drops_unmatched
 required_capability: promql_vector_matching_v0
@@ -664,3 +685,172 @@ result:double | step:datetime            | cluster:keyword
 ;
 
 // Focused REST coverage for both successful and failing vector matching queries lives in PromqlVectorMatchingIT.
+
+///////////////////////////////////////////////////////////////////////////////
+// Opaque-operand matrix: vector matching where one or both operands are opaque
+// (a bare selector or a `without` aggregation packs its identity into
+// `_timeseries` with no label columns of its own). The match key labels are
+// demanded from the operand compilations and materialized alongside the packed
+// identity. In this dataset (cluster, pod) uniquely identifies a series, so the
+// raw-selector cases must numerically equal the sum by (cluster, pod) baseline.
+// Per-series values at 2024-05-10T00:10: tx(prod) = one 409, three 361, two 298;
+// rx(prod) = one 440, three 369, two 159.
+///////////////////////////////////////////////////////////////////////////////
+
+// Baseline: concrete/concrete on (cluster, pod).
+vector_match_matrix_concrete_concrete
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(sum by (cluster, pod) (network.eth0.tx) / on (cluster, pod) sum by (cluster, pod) (network.eth0.rx))
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double           | cluster:keyword | pod:keyword | step:datetime
+0.9295454545454546 | prod            | one         | 2024-05-10T00:10:00.000Z
+0.978319783197832  | prod            | three       | 2024-05-10T00:10:00.000Z
+1.8742138364779874 | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// Opaque/opaque: both keys are materialized from _timeseries, no regrouping.
+vector_match_matrix_opaque_opaque_on
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(network.eth0.tx / on (cluster, pod) network.eth0.rx)
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double           | cluster:keyword | pod:keyword | step:datetime
+0.9295454545454546 | prod            | one         | 2024-05-10T00:10:00.000Z
+0.978319783197832  | prod            | three       | 2024-05-10T00:10:00.000Z
+1.8742138364779874 | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// Opaque/concrete: hidden labels on the LHS become join keys.
+vector_match_matrix_opaque_concrete
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(network.eth0.tx / on (cluster, pod) sum by (cluster, pod) (network.eth0.rx))
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double           | cluster:keyword | pod:keyword | step:datetime
+0.9295454545454546 | prod            | one         | 2024-05-10T00:10:00.000Z
+0.978319783197832  | prod            | three       | 2024-05-10T00:10:00.000Z
+1.8742138364779874 | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// Concrete/opaque: hidden labels on the RHS become join keys.
+vector_match_matrix_concrete_opaque
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(sum by (cluster, pod) (network.eth0.tx) / on (cluster, pod) network.eth0.rx)
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double           | cluster:keyword | pod:keyword | step:datetime
+0.9295454545454546 | prod            | one         | 2024-05-10T00:10:00.000Z
+0.978319783197832  | prod            | three       | 2024-05-10T00:10:00.000Z
+1.8742138364779874 | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// Opaque many / concrete one: the LHS keeps per-series identity; pod survives as
+// an output column materialized from the LHS (the one side has no pod to copy).
+// Same numbers as vector_match_group_left.
+vector_match_matrix_opaque_many_group_left
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(network.eth0.tx / on (cluster) group_left (pod) sum by (cluster) (network.eth0.rx))
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double            | cluster:keyword | pod:keyword | step:datetime
+0.4225206611570248  | prod            | one         | 2024-05-10T00:10:00.000Z
+0.37293388429752067 | prod            | three       | 2024-05-10T00:10:00.000Z
+0.30785123966942146 | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// Concrete one / opaque many: the RHS hidden labels survive through group_right.
+// Same numbers as vector_match_group_right.
+vector_match_matrix_opaque_many_group_right
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(sum by (cluster) (network.eth0.tx) / on (cluster) group_right (pod) network.eth0.rx)
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double           | cluster:keyword | pod:keyword | step:datetime
+2.4272727272727272 | prod            | one         | 2024-05-10T00:10:00.000Z
+2.894308943089431  | prod            | three       | 2024-05-10T00:10:00.000Z
+6.716981132075472  | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// ignoring(...) with an opaque operand: the key set is the labels the operands
+// declare minus the ignored ones - here the concrete RHS defines {cluster} - not
+// a physical-column intersection. Same numbers as vector_match_group_left.
+vector_match_matrix_opaque_ignoring
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(network.eth0.tx / ignoring (pod) group_left (pod) sum by (cluster) (network.eth0.rx))
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double            | cluster:keyword | pod:keyword | step:datetime
+0.4225206611570248  | prod            | one         | 2024-05-10T00:10:00.000Z
+0.37293388429752067 | prod            | three       | 2024-05-10T00:10:00.000Z
+0.30785123966942146 | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// A `without` identity can still expose concrete join labels: without (pod)
+// keeps (cluster, region) packed, and cluster is materialized for the key.
+// Same numbers as vector_match_on_cluster.
+vector_match_matrix_without_identity
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(sum without (pod) (network.eth0.tx) / on (cluster) sum by (cluster) (network.eth0.rx))
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, step;
+
+r:double          | cluster:keyword | step:datetime
+1.103305785123967 | prod            | 2024-05-10T00:10:00.000Z
+;
+
+// An outer aggregate consumes a joined opaque-lowered table: sum over the nine
+// per-series ratios. ROUND guards against float summation-order jitter.
+vector_match_matrix_nested_join
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(sum(network.eth0.tx / on (cluster, pod) network.eth0.rx))
+| WHERE step == "2024-05-10T00:10:00.000Z"
+| EVAL r = ROUND(r, 9)
+| KEEP r, step;
+
+r:double    | step:datetime
+9.698298222 | 2024-05-10T00:10:00.000Z
+;
+
+// The same key lowering works for comparisons: 1.0 where tx > rx per series.
+vector_match_matrix_comparison_bool
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(network.eth0.tx > bool on (cluster, pod) network.eth0.rx)
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double | cluster:keyword | pod:keyword | step:datetime
+0.0      | prod            | one         | 2024-05-10T00:10:00.000Z
+0.0      | prod            | three       | 2024-05-10T00:10:00.000Z
+1.0      | prod            | two         | 2024-05-10T00:10:00.000Z
+;
+
+// The semi-join path uses the same key lowering: every tx series has a matching
+// rx series, so all LHS values survive unchanged.
+vector_match_matrix_and
+required_capability: promql_vector_matching_v0
+PROMQL index=k8s step=10m r=(network.eth0.tx and on (cluster, pod) network.eth0.rx)
+| WHERE cluster == "prod" AND step == "2024-05-10T00:10:00.000Z"
+| KEEP r, cluster, pod, step
+| SORT pod;
+
+r:double | cluster:keyword | pod:keyword | step:datetime
+409.0    | prod            | one         | 2024-05-10T00:10:00.000Z
+361.0    | prod            | three       | 2024-05-10T00:10:00.000Z
+298.0    | prod            | two         | 2024-05-10T00:10:00.000Z
+;

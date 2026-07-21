@@ -19,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 
 import static org.elasticsearch.xpack.esql.plan.logical.promql.PromqlLabels.PROMETHEUS_LABELS_PREFIX;
 
@@ -303,6 +304,16 @@ public final class PromqlAttributesTranslationContext {
         /** Every dimension excluded along the path to here, for the innermost aggregate's {@code TimeSeriesWithout}. */
         public List<Attribute> pathExclusions() {
             return accumulatedExclusions;
+        }
+
+        /**
+         * This scope with every concrete attribute rewritten by {@code mapper} - e.g. re-id'd into a forked join
+         * operand's id-space, so a demanded source dimension binds to the fork's relation rather than dangling in the
+         * id-space it was resolved in. The top sentinels carry no attributes and pass through unchanged.
+         */
+        public InheritedAttributes mapped(UnaryOperator<Attribute> mapper) {
+            List<Attribute> mappedRequired = isTop(required) ? required : required.stream().map(mapper).toList();
+            return new InheritedAttributes(mappedRequired, accumulatedExclusions.stream().map(mapper).toList());
         }
 
         /** The concrete labels demanded of this scope; empty when the scope is the unconstrained universe. */
