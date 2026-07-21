@@ -10,7 +10,6 @@ package org.elasticsearch.xpack.security.namedcredentials;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.CredentialAuthType;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.NamedCredential;
-import org.elasticsearch.xpack.core.security.action.namedcredentials.PutNamedCredentialAction;
 import org.elasticsearch.xpack.encryption.spi.EncryptedData;
 import org.elasticsearch.xpack.encryption.spi.EncryptionService;
 
@@ -50,15 +49,17 @@ public class NamedCredentialsServiceTests extends ESTestCase {
     }
 
     public void testBuildSourceAndParseBack() {
-        PutNamedCredentialAction.Request request = new PutNamedCredentialAction.Request(
-            "c1",
-            CredentialAuthType.OAUTH_CLIENT_CREDENTIALS,
+        Map<String, String> auth = Map.of("client_id", "a", "client_secret", "b");
+        Map<String, String> config = Map.of("token_url", "https://example.com/token");
+        String blob = NamedCredentialsService.encryptAuth(FAKE_ENCRYPTION, auth);
+        Map<String, Object> source = NamedCredentialsService.buildSource(
+            "oauth_client_credentials",
             "https://example.com",
-            Map.of("token_url", "https://example.com/token"),
-            Map.of("client_id", "a", "client_secret", "b")
+            config,
+            blob,
+            1000L,
+            2000L
         );
-        String blob = NamedCredentialsService.encryptAuth(FAKE_ENCRYPTION, request.auth());
-        Map<String, Object> source = NamedCredentialsService.buildSource(request, request.config(), blob, 1000L, 2000L);
         assertThat(source.get("auth_type"), equalTo("oauth_client_credentials"));
         assertThat(source.get("auth"), equalTo(blob));
         assertThat(source.get("created_at"), equalTo(1000L));
@@ -74,14 +75,7 @@ public class NamedCredentialsServiceTests extends ESTestCase {
     }
 
     public void testBuildSourceOmitsNullUrl() {
-        PutNamedCredentialAction.Request request = new PutNamedCredentialAction.Request(
-            "c1",
-            CredentialAuthType.BEARER,
-            null,
-            null,
-            Map.of("token", "t")
-        );
-        Map<String, Object> source = NamedCredentialsService.buildSource(request, Map.of(), "blob", 1L, 1L);
+        Map<String, Object> source = NamedCredentialsService.buildSource("bearer", null, Map.of(), "blob", 1L, 1L);
         assertThat(source.containsKey("url"), is(false));
         NamedCredential parsed = NamedCredentialsService.credentialFromSource("c1", source);
         assertThat(parsed.url(), nullValue());

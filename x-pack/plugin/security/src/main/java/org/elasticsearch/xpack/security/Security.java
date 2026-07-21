@@ -151,6 +151,7 @@ import org.elasticsearch.xpack.core.security.action.enrollment.NodeEnrollmentAct
 import org.elasticsearch.xpack.core.security.action.namedcredentials.DecryptNamedCredentialAction;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.DeleteNamedCredentialAction;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.GetNamedCredentialsAction;
+import org.elasticsearch.xpack.core.security.action.namedcredentials.PatchNamedCredentialAction;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.PutNamedCredentialAction;
 import org.elasticsearch.xpack.core.security.action.oidc.OpenIdConnectAuthenticateAction;
 import org.elasticsearch.xpack.core.security.action.oidc.OpenIdConnectLogoutAction;
@@ -257,6 +258,7 @@ import org.elasticsearch.xpack.security.action.filter.SecurityActionFilter;
 import org.elasticsearch.xpack.security.action.namedcredentials.TransportDecryptNamedCredentialAction;
 import org.elasticsearch.xpack.security.action.namedcredentials.TransportDeleteNamedCredentialAction;
 import org.elasticsearch.xpack.security.action.namedcredentials.TransportGetNamedCredentialsAction;
+import org.elasticsearch.xpack.security.action.namedcredentials.TransportPatchNamedCredentialAction;
 import org.elasticsearch.xpack.security.action.namedcredentials.TransportPutNamedCredentialAction;
 import org.elasticsearch.xpack.security.action.oidc.TransportOpenIdConnectAuthenticateAction;
 import org.elasticsearch.xpack.security.action.oidc.TransportOpenIdConnectLogoutAction;
@@ -387,6 +389,7 @@ import org.elasticsearch.xpack.security.rest.action.enrollment.RestNodeEnrollmen
 import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestDecryptNamedCredentialAction;
 import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestDeleteNamedCredentialAction;
 import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestGetNamedCredentialsAction;
+import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestPatchNamedCredentialAction;
 import org.elasticsearch.xpack.security.rest.action.namedcredentials.RestPutNamedCredentialAction;
 import org.elasticsearch.xpack.security.rest.action.oauth2.RestGetTokenAction;
 import org.elasticsearch.xpack.security.rest.action.oauth2.RestInvalidateTokenAction;
@@ -1867,6 +1870,7 @@ public class Security extends Plugin
             new ActionHandler(UpdateIndexMigrationVersionAction.INSTANCE, UpdateIndexMigrationVersionAction.TransportAction.class),
             new ActionHandler(GetSecurityStatsAction.INSTANCE, TransportSecurityStatsAction.class),
             new ActionHandler(PutNamedCredentialAction.INSTANCE, TransportPutNamedCredentialAction.class),
+            new ActionHandler(PatchNamedCredentialAction.INSTANCE, TransportPatchNamedCredentialAction.class),
             new ActionHandler(GetNamedCredentialsAction.INSTANCE, TransportGetNamedCredentialsAction.class),
             new ActionHandler(DeleteNamedCredentialAction.INSTANCE, TransportDeleteNamedCredentialAction.class),
             new ActionHandler(DecryptNamedCredentialAction.INSTANCE, TransportDecryptNamedCredentialAction.class),
@@ -1966,6 +1970,7 @@ public class Security extends Plugin
             new RestUpdateSecuritySettingsAction(settings, getLicenseState()),
             new RestSecurityStatsAction(settings, getLicenseState(), clusterSupportsFeature),
             new RestPutNamedCredentialAction(settings, getLicenseState()),
+            new RestPatchNamedCredentialAction(settings, getLicenseState()),
             new RestGetNamedCredentialsAction(settings, getLicenseState()),
             new RestDeleteNamedCredentialAction(settings, getLicenseState()),
             new RestDecryptNamedCredentialAction(settings, getLicenseState())

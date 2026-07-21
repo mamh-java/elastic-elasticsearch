@@ -610,5 +610,8 @@ public class PrivilegeTests extends ESTestCase {
             DeleteNamedCredentialAction.NAME,
             DecryptNamedCredentialAction.NAME
         );
+        // read_security provides read-only access to named credentials (redacted), but not decrypt
+        verifyClusterActionAllowed(ClusterPrivilegeResolver.READ_SECURITY, GetNamedCredentialsAction.NAME);
+        verifyClusterActionDenied(ClusterPrivilegeResolver.READ_SECURITY, DecryptNamedCredentialAction.NAME);
     }
 }

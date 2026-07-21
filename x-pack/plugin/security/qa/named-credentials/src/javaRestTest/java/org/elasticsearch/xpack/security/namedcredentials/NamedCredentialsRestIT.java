@@ -85,6 +85,12 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
         return request;
     }
 
+    private static Request patchRequest(String name, String body) {
+        Request request = new Request("PATCH", "/_security/named_credentials/" + name);
+        request.setJsonEntity(body);
+        return request;
+    }
+
     /**
      * The first PUT in each test may race PEK generation (503 until the key exists); retries until the key is available.
      * Returns the parsed response body so callers can assert fields like {@code created}.
@@ -109,11 +115,12 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
             }""");
         assertThat(created.evaluate("created"), equalTo(true));
 
-        // Update returns created=false
+        // Update via PUT (full-replace) returns created=false
         var updated = assertOKAndCreateObjectPath(client().performRequest(putRequest("it-servicenow", """
             {
               "auth_type": "oauth_client_credentials",
-              "url": "https://instance.service-now.com/v2"
+              "url": "https://instance.service-now.com/v2",
+              "auth": { "client_id": "my-client-id", "client_secret": "super-secret" }
             }""")));
         assertThat(updated.evaluate("created"), equalTo(false));
 
@@ -121,7 +128,6 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
         var get = assertOKAndCreateObjectPath(client().performRequest(new Request("GET", "/_security/named_credentials/it-servicenow")));
         assertThat(get.evaluate("name"), equalTo("it-servicenow"));
         assertThat(get.evaluate("auth_type"), equalTo("oauth_client_credentials"));
-        assertThat(get.evaluate("config.scope"), equalTo("read write"));
         assertThat(get.evaluate("auth"), equalTo("::es_redacted::"));
 
         // LIST redacts
@@ -144,26 +150,28 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
         assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(404));
     }
 
-    public void testAuthCarryForwardOnPut() throws Exception {
-        putCredentialWaitingForKey("it-carry", """
+    public void testPatchCarryForward() throws Exception {
+        putCredentialWaitingForKey("it-patch", """
             { "auth_type": "basic", "url": "https://one.example.com", "auth": { "username": "u1", "password": "p1" } }""");
 
-        // Update url, omit auth entirely -> secrets preserved
-        assertOK(client().performRequest(putRequest("it-carry", """
-            { "auth_type": "basic", "url": "https://two.example.com" }""")));
+        // PATCH to update only url — auth is preserved
+        assertOK(client().performRequest(patchRequest("it-patch", """
+            { "url": "https://two.example.com" }""")));
 
         var decrypted = assertOKAndCreateObjectPath(
-            client().performRequest(new Request("GET", "/_security/named_credentials/it-carry/_decrypt"))
+            client().performRequest(new Request("GET", "/_security/named_credentials/it-patch/_decrypt"))
         );
         assertThat(decrypted.evaluate("url"), equalTo("https://two.example.com"));
+        assertThat(decrypted.evaluate("auth.username"), equalTo("u1"));
         assertThat(decrypted.evaluate("auth.password"), equalTo("p1"));
 
-        // Provide auth -> fully replaced
-        assertOK(client().performRequest(putRequest("it-carry", """
-            { "auth_type": "basic", "auth": { "username": "u2", "password": "p2" } }""")));
+        // PATCH to update only auth — url is preserved
+        assertOK(client().performRequest(patchRequest("it-patch", """
+            { "auth": { "username": "u2", "password": "p2" } }""")));
         decrypted = assertOKAndCreateObjectPath(
-            client().performRequest(new Request("GET", "/_security/named_credentials/it-carry/_decrypt"))
+            client().performRequest(new Request("GET", "/_security/named_credentials/it-patch/_decrypt"))
         );
+        assertThat(decrypted.evaluate("url"), equalTo("https://two.example.com"));
         assertThat(decrypted.evaluate("auth.username"), equalTo("u2"));
         assertThat(decrypted.evaluate("auth.password"), equalTo("p2"));
     }
@@ -179,7 +187,7 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
             { "auth_type": "basic", "config": { "bogus": "x" }, "auth": { "username": "u", "password": "p" } }""")));
         assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(400));
 
-        // Missing auth on create — must wait for the key first via a successful control PUT
+        // Missing auth on PUT (auth required) — must wait for the key first via a successful control PUT
         putCredentialWaitingForKey("it-control", """
             { "auth_type": "basic", "auth": { "username": "u", "password": "p" } }""");
         e = expectThrows(ResponseException.class, () -> client().performRequest(putRequest("it-bad3", """
@@ -189,6 +197,15 @@ public class NamedCredentialsRestIT extends ESRestTestCase {
         // Bad name
         e = expectThrows(ResponseException.class, () -> client().performRequest(putRequest("Uppercase-Name", """
             { "auth_type": "basic", "auth": { "username": "u", "password": "p" } }""")));
+        assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(400));
+
+        // PATCH on non-existent credential returns 404
+        e = expectThrows(ResponseException.class, () -> client().performRequest(patchRequest("it-does-not-exist", """
+            { "url": "https://new.example.com" }""")));
+        assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(404));
+
+        // PATCH with empty body (no fields) returns 400
+        e = expectThrows(ResponseException.class, () -> client().performRequest(patchRequest("it-control", "{}")));
         assertThat(e.getResponse().getStatusLine().getStatusCode(), equalTo(400));
     }
 

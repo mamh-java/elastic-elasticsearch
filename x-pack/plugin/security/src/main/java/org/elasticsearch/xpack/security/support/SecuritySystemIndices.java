@@ -81,7 +81,7 @@ public class SecuritySystemIndices {
     private SecurityIndexManager mainIndexManager;
     private SecurityIndexManager tokenIndexManager;
     private SecurityIndexManager profileIndexManager;
-    private volatile SecurityIndexManager namedCredentialsIndexManager;
+    private SecurityIndexManager namedCredentialsIndexManager;
 
     public SecuritySystemIndices(Settings settings) {
         this.mainDescriptor = getSecurityMainIndexDescriptor();

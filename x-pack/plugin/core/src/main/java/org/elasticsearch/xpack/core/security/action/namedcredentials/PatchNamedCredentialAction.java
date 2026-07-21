@@ -13,10 +13,8 @@ import org.elasticsearch.action.ActionType;
 import org.elasticsearch.action.UntypedActionRequest;
 import org.elasticsearch.action.ValidateActions;
 import org.elasticsearch.action.support.TransportAction;
-import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
-import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.ToXContentObject;
@@ -28,53 +26,53 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 import static org.elasticsearch.xcontent.ConstructingObjectParser.optionalConstructorArg;
 
 /**
- * Creates or replaces a named credential (strict full-replace semantics). Secrets in the
- * {@code auth} block are required and are encrypted before storage. Use PATCH for partial updates.
+ * Partially updates an existing named credential. Only the fields present in the request body
+ * are updated; absent fields are carried forward from the stored document.
+ * All fields are optional, but at least one must be provided.
  */
-public final class PutNamedCredentialAction {
+public final class PatchNamedCredentialAction {
 
-    public static final String NAME = "cluster:admin/xpack/security/named_credentials/put";
+    public static final String NAME = "cluster:admin/xpack/security/named_credentials/patch";
     public static final ActionType<Response> INSTANCE = new ActionType<>(NAME);
 
-    private PutNamedCredentialAction() {/* no instances */}
+    private PatchNamedCredentialAction() {/* no instances */}
 
     public static final class Request extends UntypedActionRequest {
 
         @SuppressWarnings("unchecked")
         private static final ConstructingObjectParser<Request, String> PARSER = new ConstructingObjectParser<>(
-            "put_named_credential_request",
+            "patch_named_credential_request",
             false,
-            (args, name) -> new Request(
-                name,
-                CredentialAuthType.fromTypeName((String) args[0]),
-                (String) args[1],
-                (Map<String, String>) args[2],
-                (Map<String, String>) args[3]
-            )
+            (args, name) -> {
+                final String authTypeStr = (String) args[0];
+                final CredentialAuthType authType = authTypeStr != null ? CredentialAuthType.fromTypeName(authTypeStr) : null;
+                return new Request(name, authType, (String) args[1], (Map<String, String>) args[2], (Map<String, String>) args[3]);
+            }
         );
 
         static {
-            PARSER.declareString(constructorArg(), new ParseField("auth_type"));
+            PARSER.declareString(optionalConstructorArg(), new ParseField("auth_type"));
             PARSER.declareString(optionalConstructorArg(), new ParseField("url"));
             PARSER.declareObject(optionalConstructorArg(), (p, c) -> p.mapStrings(), new ParseField("config"));
             PARSER.declareObject(optionalConstructorArg(), (p, c) -> p.mapStrings(), new ParseField("auth"));
         }
 
         private final String credentialName;
+        @Nullable
         private final CredentialAuthType authType;
         @Nullable
         private final String url;
+        @Nullable
         private final Map<String, String> config;
         @Nullable
         private final Map<String, String> auth;
 
         public Request(
             String credentialName,
-            CredentialAuthType authType,
+            @Nullable CredentialAuthType authType,
             @Nullable String url,
             @Nullable Map<String, String> config,
             @Nullable Map<String, String> auth
@@ -82,7 +80,7 @@ public final class PutNamedCredentialAction {
             this.credentialName = credentialName;
             this.authType = authType;
             this.url = url;
-            this.config = config == null ? Map.of() : Map.copyOf(config);
+            this.config = config == null ? null : Map.copyOf(config);
             this.auth = auth == null ? null : Map.copyOf(auth);
         }
 
@@ -103,6 +101,7 @@ public final class PutNamedCredentialAction {
             return credentialName;
         }
 
+        @Nullable
         public CredentialAuthType authType() {
             return authType;
         }
@@ -112,6 +111,7 @@ public final class PutNamedCredentialAction {
             return url;
         }
 
+        @Nullable
         public Map<String, String> config() {
             return config;
         }
@@ -121,37 +121,25 @@ public final class PutNamedCredentialAction {
             return auth;
         }
 
-        /** Shared name rules: lowercase, index-name-like charset, max 256 chars. */
-        public static void validateCredentialName(String name, List<String> errors) {
-            if (Strings.isNullOrEmpty(name)) {
-                errors.add("credential name must not be empty");
-                return;
-            }
-            if (name.length() > 256) {
-                errors.add("credential name must not exceed 256 characters");
-            }
-            if (name.startsWith("_") || name.startsWith("-")) {
-                errors.add("credential name must not start with '_' or '-'");
-            }
-            boolean validChars = name.chars()
-                .allMatch(c -> (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.');
-            if (validChars == false) {
-                errors.add("credential name must contain only lowercase letters, digits, '.', '_', and '-'");
-            }
-        }
-
         @Override
         public ActionRequestValidationException validate() {
             List<String> errors = new ArrayList<>();
-            validateCredentialName(credentialName, errors);
-            if (auth == null) {
-                errors.add("auth is required for PUT; use PATCH to update individual fields");
-            } else if (auth.isEmpty()) {
-                errors.add("auth must not be empty");
-            } else {
-                errors.addAll(authType.validateAuth(auth));
+            PutNamedCredentialAction.Request.validateCredentialName(credentialName, errors);
+            if (authType == null && url == null && config == null && auth == null) {
+                errors.add("at least one field must be provided for a PATCH");
             }
-            errors.addAll(authType.validateConfig(config));
+            if (auth != null) {
+                if (auth.isEmpty()) {
+                    errors.add("auth must not be empty when provided");
+                } else if (authType != null) {
+                    // We know the authType from the request — validate now.
+                    errors.addAll(authType.validateAuth(auth));
+                }
+                // If authType is absent we don't know the stored type; service does the validation.
+            }
+            if (config != null && authType != null) {
+                errors.addAll(authType.validateConfig(config));
+            }
             ActionRequestValidationException validationException = null;
             for (String error : errors) {
                 validationException = ValidateActions.addValidationError(error, validationException);
@@ -165,28 +153,15 @@ public final class PutNamedCredentialAction {
         }
     }
 
-    /** Response for PUT; {@code created} is {@code true} when the credential was newly created, {@code false} when replaced. */
+    /** Response for PATCH; always {@code acknowledged: true}. */
     public static final class Response extends ActionResponse implements ToXContentObject {
 
-        private final boolean created;
-
-        public Response(boolean created) {
-            this.created = created;
-        }
-
-        public boolean created() {
-            return created;
-        }
-
-        public RestStatus status() {
-            return created ? RestStatus.CREATED : RestStatus.OK;
-        }
+        public Response() {}
 
         @Override
         public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
             builder.startObject();
             builder.field("acknowledged", true);
-            builder.field("created", created);
             builder.endObject();
             return builder;
         }

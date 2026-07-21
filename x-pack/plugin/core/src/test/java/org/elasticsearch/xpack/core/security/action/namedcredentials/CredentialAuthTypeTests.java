@@ -70,4 +70,14 @@ public class CredentialAuthTypeTests extends ESTestCase {
         assertThat(errors.get(0), containsString("must not be empty"));
         assertThat(errors.get(0), containsString("password"));
     }
+
+    public void testValidateAuthRejectsEmptyOptionalField() {
+        // access_token is optional for oauth_authorization_code, but if provided it must be non-empty
+        List<String> errors = CredentialAuthType.OAUTH_AUTHORIZATION_CODE.validateAuth(
+            Map.of("client_id", "a", "client_secret", "b", "access_token", "")
+        );
+        assertThat(errors, hasSize(1));
+        assertThat(errors.get(0), containsString("must not be empty"));
+        assertThat(errors.get(0), containsString("access_token"));
+    }
 }

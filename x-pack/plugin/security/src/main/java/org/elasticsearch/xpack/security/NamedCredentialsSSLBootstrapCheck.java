@@ -38,8 +38,7 @@ final class NamedCredentialsSSLBootstrapCheck implements BootstrapCheck {
     }
 
     @Override
-    // TODO: add a named-credentials-specific ReferenceDocs entry
     public ReferenceDocs referenceDocs() {
-        return ReferenceDocs.BOOTSTRAP_CHECK_TOKEN_SSL;
+        return ReferenceDocs.BOOTSTRAP_CHECK_NAMED_CREDENTIALS_SSL;
     }
 }

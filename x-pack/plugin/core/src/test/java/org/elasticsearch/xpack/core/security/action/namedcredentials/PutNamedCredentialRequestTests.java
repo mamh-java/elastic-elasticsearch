@@ -52,8 +52,18 @@ public class PutNamedCredentialRequestTests extends ESTestCase {
         PutNamedCredentialAction.Request request = parse("c1", """
             { "auth_type": "basic" }""");
         assertThat(request.auth(), nullValue());
-        assertThat(request.config(), nullValue());
-        assertThat(request.validate(), nullValue());
+        // config is never null in PUT; absent means empty map
+        assertThat(request.config(), equalTo(Map.of()));
+        // validate() should fail: auth is required for PUT
+        assertThat(request.validate(), notNullValue());
+    }
+
+    public void testValidateRequiresAuth() throws IOException {
+        PutNamedCredentialAction.Request request = parse("my-cred", """
+            { "auth_type": "basic", "url": "https://example.com" }""");
+        ActionRequestValidationException e = request.validate();
+        assertThat(e, notNullValue());
+        assertThat(e.getMessage(), containsString("auth is required for PUT"));
     }
 
     public void testUnknownAuthTypeFailsParsing() {

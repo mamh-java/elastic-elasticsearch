@@ -280,6 +280,7 @@ public class Constants {
         "cluster:admin/xpack/security/named_credentials/decrypt",
         "cluster:admin/xpack/security/named_credentials/delete",
         "cluster:admin/xpack/security/named_credentials/get",
+        "cluster:admin/xpack/security/named_credentials/patch",
         "cluster:admin/xpack/security/named_credentials/put",
         "cluster:admin/xpack/security/oidc/authenticate",
         "cluster:admin/xpack/security/oidc/logout",

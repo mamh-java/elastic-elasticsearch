@@ -29,6 +29,7 @@ import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.index.engine.VersionConflictEngineException;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHit;
@@ -41,6 +42,7 @@ import org.elasticsearch.xcontent.XContentParserConfiguration;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.CredentialAuthType;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.NamedCredential;
+import org.elasticsearch.xpack.core.security.action.namedcredentials.PatchNamedCredentialAction;
 import org.elasticsearch.xpack.core.security.action.namedcredentials.PutNamedCredentialAction;
 import org.elasticsearch.xpack.encryption.spi.EncryptedData;
 import org.elasticsearch.xpack.encryption.spi.EncryptionService;
@@ -88,63 +90,33 @@ public class NamedCredentialsService {
     }
 
     /**
-     * Holds the raw document source together with sequence number metadata for optimistic concurrency.
+     * Holds the raw document source, with optional sequence-number metadata for optimistic concurrency.
+     * {@code seqNo} and {@code primaryTerm} are {@code -1} when the caller did not request them.
      */
     private record RawGetResult(Map<String, Object> source, long seqNo, long primaryTerm) {}
 
     /**
-     * Creates or replaces a named credential. Responds {@code true} if created, {@code false} if replaced.
+     * Creates or replaces a named credential (strict full-replace). Auth is always required.
+     * Responds {@code true} if created, {@code false} if replaced.
      */
     public void putCredential(PutNamedCredentialAction.Request request, ActionListener<Boolean> listener) {
         final EncryptionService encryption = requireEncryptionService(listener);
         if (encryption == null) {
             return;
         }
-        getRawGetResult(request.credentialName(), ActionListener.<RawGetResult>wrap(existing -> {
+        getRaw(request.credentialName(), true, ActionListener.<RawGetResult>wrap(existing -> {
             final boolean creating = existing == null;
-            final Map<String, Object> existingSource = creating ? null : existing.source();
-            final String authBlob;
-            if (request.auth() != null) {
-                authBlob = encryptAuth(encryption, request.auth());
-            } else if (creating) {
-                listener.onFailure(
-                    new ElasticsearchStatusException(
-                        "auth is required when creating named credential [{}]",
-                        RestStatus.BAD_REQUEST,
-                        request.credentialName()
-                    )
-                );
-                return;
-            } else if (request.authType().typeName().equals(existingSource.get("auth_type")) == false) {
-                listener.onFailure(
-                    new ElasticsearchStatusException(
-                        "auth is required when changing auth_type of named credential [{}] from [{}] to [{}]",
-                        RestStatus.BAD_REQUEST,
-                        request.credentialName(),
-                        existingSource.get("auth_type"),
-                        request.authType().typeName()
-                    )
-                );
-                return;
-            } else {
-                // Carry-forward: request omitted auth, keep the stored encrypted blob as-is.
-                logger.debug("carrying forward existing auth blob for named credential [{}]", request.credentialName());
-                authBlob = (String) existingSource.get("auth");
-            }
+            final String authBlob = encryptAuth(encryption, request.auth());
             final long now = clock.millis();
-            final long createdAt = creating ? now : ((Number) existingSource.get("created_at")).longValue();
-            // Carry-forward: if config omitted on update, keep the stored config.
-            final Map<String, String> effectiveConfig;
-            if (request.config() != null) {
-                effectiveConfig = request.config();
-            } else if (creating == false) {
-                @SuppressWarnings("unchecked")
-                Map<String, String> storedConfig = (Map<String, String>) existingSource.get("config");
-                effectiveConfig = storedConfig != null ? storedConfig : Map.of();
-            } else {
-                effectiveConfig = Map.of();
-            }
-            final Map<String, Object> source = buildSource(request, effectiveConfig, authBlob, createdAt, now);
+            final long createdAt = creating ? now : ((Number) existing.source().get("created_at")).longValue();
+            final Map<String, Object> source = buildSource(
+                request.authType().typeName(),
+                request.url(),
+                request.config(),
+                authBlob,
+                createdAt,
+                now
+            );
             final IndexRequest indexRequest = client.prepareIndex(indexManager.aliasName())
                 .setId(request.credentialName())
                 .setSource(source)
@@ -165,8 +137,121 @@ public class NamedCredentialsService {
                         indexRequest,
                         ActionListener.<DocWriteResponse>wrap(
                             response -> listener.onResponse(response.getResult() == DocWriteResponse.Result.CREATED),
-                            listener::onFailure
+                            e -> {
+                                if (e instanceof VersionConflictEngineException) {
+                                    listener.onFailure(
+                                        new ElasticsearchStatusException(
+                                            creating
+                                                ? "named credential [{}] already exists; use a PUT with the same name to update it"
+                                                : "named credential [{}] was concurrently modified; please retry",
+                                            RestStatus.CONFLICT,
+                                            request.credentialName()
+                                        )
+                                    );
+                                } else {
+                                    listener.onFailure(e);
+                                }
+                            }
                         )
+                    )
+                );
+        }, listener::onFailure));
+    }
+
+    /**
+     * Partially updates an existing named credential. Only the fields present in the request are
+     * changed; absent fields are carried forward from the stored document.
+     * Fails with {@link org.elasticsearch.ResourceNotFoundException} if the credential does not exist.
+     */
+    public void patchCredential(PatchNamedCredentialAction.Request request, ActionListener<Void> listener) {
+        final EncryptionService encryption = requireEncryptionService(listener);
+        if (encryption == null) {
+            return;
+        }
+        getRaw(request.credentialName(), true, ActionListener.<RawGetResult>wrap(existing -> {
+            if (existing == null) {
+                listener.onFailure(
+                    new org.elasticsearch.ResourceNotFoundException("named credential [{}] not found", request.credentialName())
+                );
+                return;
+            }
+            final Map<String, Object> existingSource = existing.source();
+
+            // Merge: request fields override stored values; absent fields are carried forward.
+            final CredentialAuthType effectiveAuthType = request.authType() != null
+                ? request.authType()
+                : CredentialAuthType.fromTypeName((String) existingSource.get("auth_type"));
+
+            final String effectiveUrl = request.url() != null ? request.url() : (String) existingSource.get("url");
+
+            @SuppressWarnings("unchecked")
+            final Map<String, String> storedConfig = existingSource.get("config") != null
+                ? (Map<String, String>) existingSource.get("config")
+                : Map.of();
+            final Map<String, String> effectiveConfig = request.config() != null ? request.config() : storedConfig;
+
+            // Validate supplied fields against the effective auth type.
+            final List<String> errors = new ArrayList<>();
+            if (request.auth() != null) {
+                errors.addAll(effectiveAuthType.validateAuth(request.auth()));
+            }
+            if (request.config() != null) {
+                errors.addAll(effectiveAuthType.validateConfig(request.config()));
+            }
+            if (errors.isEmpty() == false) {
+                listener.onFailure(
+                    new ElasticsearchStatusException(
+                        "validation failed for PATCH of named credential [{}]: {}",
+                        RestStatus.BAD_REQUEST,
+                        request.credentialName(),
+                        String.join("; ", errors)
+                    )
+                );
+                return;
+            }
+
+            final String effectiveAuthBlob = request.auth() != null
+                ? encryptAuth(encryption, request.auth())
+                : (String) existingSource.get("auth");
+
+            final long now = clock.millis();
+            final long createdAt = ((Number) existingSource.get("created_at")).longValue();
+            final Map<String, Object> source = buildSource(
+                effectiveAuthType.typeName(),
+                effectiveUrl,
+                effectiveConfig,
+                effectiveAuthBlob,
+                createdAt,
+                now
+            );
+            final IndexRequest indexRequest = client.prepareIndex(indexManager.aliasName())
+                .setId(request.credentialName())
+                .setSource(source)
+                .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
+                .setIfSeqNo(existing.seqNo())
+                .setIfPrimaryTerm(existing.primaryTerm())
+                .request();
+            indexManager.forCurrentProject()
+                .prepareIndexIfNeededThenExecute(
+                    listener::onFailure,
+                    () -> executeAsyncWithOrigin(
+                        client,
+                        SECURITY_ORIGIN,
+                        TransportIndexAction.TYPE,
+                        indexRequest,
+                        ActionListener.<DocWriteResponse>wrap(response -> listener.onResponse(null), e -> {
+                            if (e instanceof VersionConflictEngineException) {
+                                listener.onFailure(
+                                    new ElasticsearchStatusException(
+                                        "named credential [{}] was concurrently modified; please retry",
+                                        RestStatus.CONFLICT,
+                                        request.credentialName()
+                                    )
+                                );
+                            } else {
+                                listener.onFailure(e);
+                            }
+                        })
                     )
                 );
         }, listener::onFailure));
@@ -179,11 +264,11 @@ public class NamedCredentialsService {
      */
     public void getCredentials(@Nullable String name, ActionListener<List<NamedCredential>> listener) {
         if (name != null) {
-            getRawSource(name, ActionListener.<Map<String, Object>>wrap(source -> {
-                if (source == null) {
+            getRaw(name, false, ActionListener.<RawGetResult>wrap(result -> {
+                if (result == null) {
                     listener.onFailure(new org.elasticsearch.ResourceNotFoundException("named credential [" + name + "] not found"));
                 } else {
-                    listener.onResponse(List.of(credentialFromSource(name, source)));
+                    listener.onResponse(List.of(credentialFromSource(name, result.source())));
                 }
             }, listener::onFailure));
             return;
@@ -260,11 +345,12 @@ public class NamedCredentialsService {
         if (encryption == null) {
             return;
         }
-        getRawSource(name, ActionListener.<Map<String, Object>>wrap(source -> {
-            if (source == null) {
+        getRaw(name, false, ActionListener.<RawGetResult>wrap(result -> {
+            if (result == null) {
                 listener.onFailure(new org.elasticsearch.ResourceNotFoundException("named credential [" + name + "] not found"));
                 return;
             }
+            final Map<String, Object> source = result.source();
             final NamedCredential redacted = credentialFromSource(name, source);
             final String authBlob = (String) source.get("auth");
             if (authBlob == null) {
@@ -293,10 +379,11 @@ public class NamedCredentialsService {
     }
 
     /**
-     * Fetches the raw document source together with its sequence number metadata for optimistic concurrency,
-     * or {@code null} if the document (or the index) does not exist.
+     * Fetches the raw document, or {@code null} if the document (or the index) does not exist.
+     * When {@code withSeqNo} is {@code true}, the returned {@link RawGetResult} includes sequence-number
+     * metadata for optimistic concurrency; callers that only need the source should pass {@code false}.
      */
-    private void getRawGetResult(String name, ActionListener<RawGetResult> listener) {
+    private void getRaw(String name, boolean withSeqNo, ActionListener<RawGetResult> listener) {
         final SecurityIndexManager.IndexState indexState = indexManager.forCurrentProject();
         if (indexState.indexExists() == false) {
             listener.onResponse(null);
@@ -306,7 +393,7 @@ public class NamedCredentialsService {
             listener.onFailure(indexState.getUnavailableReason(SecurityIndexManager.Availability.PRIMARY_SHARDS));
             return;
         }
-        final GetRequest getRequest = client.prepareGet(indexManager.aliasName(), name).request();
+        final GetRequest getRequest = client.prepareGet(indexManager.aliasName(), name).setFetchSource(true).request();
         indexState.checkIndexVersionThenExecute(
             listener::onFailure,
             () -> executeAsyncWithOrigin(
@@ -315,37 +402,14 @@ public class NamedCredentialsService {
                 getRequest,
                 ActionListener.<GetResponse>wrap(
                     response -> listener.onResponse(
-                        response.isExists() ? new RawGetResult(response.getSource(), response.getSeqNo(), response.getPrimaryTerm()) : null
+                        response.isExists()
+                            ? new RawGetResult(
+                                response.getSource(),
+                                withSeqNo ? response.getSeqNo() : -1,
+                                withSeqNo ? response.getPrimaryTerm() : -1
+                            )
+                            : null
                     ),
-                    listener::onFailure
-                ),
-                client::get
-            )
-        );
-    }
-
-    /**
-     * Fetches the raw document source, or {@code null} if the document (or the index) does not exist.
-     */
-    private void getRawSource(String name, ActionListener<Map<String, Object>> listener) {
-        final SecurityIndexManager.IndexState indexState = indexManager.forCurrentProject();
-        if (indexState.indexExists() == false) {
-            listener.onResponse(null);
-            return;
-        }
-        if (indexState.isAvailable(SecurityIndexManager.Availability.PRIMARY_SHARDS) == false) {
-            listener.onFailure(indexState.getUnavailableReason(SecurityIndexManager.Availability.PRIMARY_SHARDS));
-            return;
-        }
-        final GetRequest getRequest = client.prepareGet(indexManager.aliasName(), name).request();
-        indexState.checkIndexVersionThenExecute(
-            listener::onFailure,
-            () -> executeAsyncWithOrigin(
-                client.threadPool().getThreadContext(),
-                SECURITY_ORIGIN,
-                getRequest,
-                ActionListener.<GetResponse>wrap(
-                    response -> listener.onResponse(response.isExists() ? response.getSource() : null),
                     listener::onFailure
                 ),
                 client::get
@@ -381,16 +445,17 @@ public class NamedCredentialsService {
     // Visible for testing
 
     static Map<String, Object> buildSource(
-        PutNamedCredentialAction.Request request,
+        String authType,
+        @Nullable String url,
         Map<String, String> config,
         String authBlobBase64,
         long createdAt,
         long updatedAt
     ) {
         final Map<String, Object> source = new HashMap<>();
-        source.put("auth_type", request.authType().typeName());
-        if (request.url() != null) {
-            source.put("url", request.url());
+        source.put("auth_type", authType);
+        if (url != null) {
+            source.put("url", url);
         }
         source.put("config", config);
         source.put("auth", authBlobBase64);
