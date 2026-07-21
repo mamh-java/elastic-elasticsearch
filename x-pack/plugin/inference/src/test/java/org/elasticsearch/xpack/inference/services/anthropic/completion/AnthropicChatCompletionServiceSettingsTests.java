@@ -233,6 +233,10 @@ public class AnthropicChatCompletionServiceSettingsTests extends AbstractBWCWire
         AnthropicChatCompletionServiceSettings instance,
         TransportVersion version
     ) {
-        return instance;
+        if (version.supports(AnthropicChatCompletionServiceSettings.ANTHROPIC_COMPLETION_URL_ADDED)) {
+            return instance;
+        }
+
+        return new AnthropicChatCompletionServiceSettings(instance.modelId(), null, instance.rateLimitSettings());
     }
 }

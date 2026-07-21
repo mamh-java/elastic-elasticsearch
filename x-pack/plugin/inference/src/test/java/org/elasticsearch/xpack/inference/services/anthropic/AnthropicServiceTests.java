@@ -720,13 +720,22 @@ public class AnthropicServiceTests extends InferenceServiceTestCase {
                               "type": "str",
                               "supported_task_types": ["completion", "chat_completion"]
                           },
-                        "max_tokens": {
+                          "max_tokens": {
                               "description": "The maximum number of tokens to generate before stopping.",
                               "label": "Max Tokens",
                               "required": true,
                               "sensitive": false,
                               "updatable": false,
                               "type": "int",
+                              "supported_task_types": ["completion", "chat_completion"]
+                          },
+                          "url": {
+                              "description": "The absolute URL of the Anthropic compatible API endpoint to send requests to.",
+                              "label": "URL",
+                              "required": false,
+                              "sensitive": false,
+                              "updatable": false,
+                              "type": "str",
                               "supported_task_types": ["completion", "chat_completion"]
                           }
                       }

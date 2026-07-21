@@ -196,7 +196,7 @@ public class AnthropicService extends SenderService<AnthropicModel> {
                 configurationMap.put(
                     URL,
                     new SettingsConfiguration.Builder(SUPPORTED_TASK_TYPES).setDescription(
-                        "The absolute URL of the Anthropic API endpoint to send requests to."
+                        "The absolute URL of the Anthropic compatible API endpoint to send requests to."
                     )
                         .setLabel("URL")
                         .setRequired(false)
