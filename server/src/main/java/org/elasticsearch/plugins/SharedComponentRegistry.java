@@ -9,25 +9,24 @@
 
 package org.elasticsearch.plugins;
 
+import org.elasticsearch.common.util.CachedSupplier;
+
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
- * Per-node registry for components that must be shared between plugins before Guice wiring is available, i.e. during
- * {@link Plugin#createComponents}. A plugin that builds a component another plugin needs during its own {@code createComponents} can
- * {@link #register} it here; the consuming plugin retrieves it with {@link #get}.
+ * A per-node registry for sharing component instances between plugins during node startup.
  *
- * <p>Exactly one instance exists per node (see {@link Plugin.PluginServices#sharedComponents()}), constructed fresh for every node,
- * so a component registered here is never visible to another node, even when multiple nodes run in the same JVM, as in tests
- * (including multiple nodes built concurrently, e.g. by tests that start several clusters in parallel).
+ * <p>Plugins exchange components here during {@link Plugin#createComponents}, before Guice is available.
+ * A producing plugin calls {@link #register} to publish a component by type.
+ * A consuming plugin calls {@link #get} to retrieve it.
  *
- * <p>Load ordering still applies: a plugin that calls {@link #get} for a type must be loaded after the plugin that {@link #register}s
- * it (today, via {@code extendedPlugins}).
+ * <p>Each node gets its own instance, so components registered here are never visible to other nodes.
  *
- * <p>Plugins wired through Guice should prefer having a dependency injected (published as a {@code PluginComponentBinding} from
- * {@code createComponents}) over using this registry; it exists specifically for the createComponents-time gap where Guice is not
- * yet available.
+ * <p>Plugins initialize in load order. A consumer must load after its producer, typically enforced via
+ * {@code extendedPlugins}. When load order cannot be guaranteed, use {@link #getProvider}.
  */
 public final class SharedComponentRegistry {
 
@@ -39,7 +38,10 @@ public final class SharedComponentRegistry {
      * @throws IllegalStateException if a component is already registered under {@code type}
      */
     public <T> void register(Class<T> type, T component) {
-        Object existing = components.putIfAbsent(type, Objects.requireNonNull(component));
+        var existing = components.putIfAbsent(
+            Objects.requireNonNull(type, "type must not be null"),
+            Objects.requireNonNull(component, "component must not be null")
+        );
         if (existing != null) {
             throw new IllegalStateException(type.getSimpleName() + " is already registered");
         }
@@ -51,10 +53,31 @@ public final class SharedComponentRegistry {
      * @throws IllegalStateException if no component is registered under {@code type} yet
      */
     public <T> T get(Class<T> type) {
-        Object component = components.get(type);
+        var component = components.get(type);
         if (component == null) {
             throw new IllegalStateException(type.getSimpleName() + " is not registered yet");
         }
         return type.cast(component);
+    }
+
+    /**
+     * Returns the component registered under the given type, or {@code defaultValue} if none is registered.
+     */
+    public <T> T getOrDefault(Class<T> type, T defaultValue) {
+        var component = components.get(Objects.requireNonNull(type, "type must not be null"));
+        return component != null ? type.cast(component) : defaultValue;
+    }
+
+    /**
+     * Returns a provider for the component of the given type.
+     *
+     * <p>Unlike {@link #get}, this does not require the component to be registered at call time. The returned
+     * {@link Supplier} defers the lookup until its {@code get()} method is first invoked, which is useful when
+     * the registration order across plugins cannot be guaranteed. The result is memoized after the first successful
+     * lookup.
+     */
+    public <T> Supplier<T> getProvider(Class<T> type) {
+        Objects.requireNonNull(type, "type must not be null");
+        return CachedSupplier.wrap(() -> get(type));
     }
 }
