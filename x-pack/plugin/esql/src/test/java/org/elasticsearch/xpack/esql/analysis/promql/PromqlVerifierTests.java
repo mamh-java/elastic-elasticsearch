@@ -105,12 +105,15 @@ public class PromqlVerifierTests extends ESTestCase {
     }
 
     public void testLogicalSetBinaryOperators() {
+        // `and` is supported between aggregated series (see the vector-matching csv-spec); between bare selectors it is rejected because
+        // there are no grouping labels to match on.
+        tsdb.error(
+            "PROMQL index=test step=5m foo and bar",
+            containsString("set operator [and] is only supported between aggregated series")
+        );
+        // `unless` (anti-join) has no physical executor yet and is rejected outright.
+        tsdb.error("PROMQL index=test step=5m foo unless bar", containsString("set operator [unless] is not supported at this time"));
         List.of("and", "unless").forEach(op -> {
-            // metric op metric: and/unless (INTERSECT/SUBTRACT) are not supported yet.
-            tsdb.error(
-                "PROMQL index=test step=5m foo " + op + " bar",
-                containsString("set operator [" + op + "] is not supported at this time")
-            );
             // Any scalar operand is illegal in PromQL itself; this takes precedence over the unsupported-op message.
             // scalar op scalar
             tsdb.error(
@@ -380,11 +383,11 @@ public class PromqlVerifierTests extends ESTestCase {
         );
     }
 
-    public void testGroupModifiersNotSupported() {
-        tsdb.error(
-            "PROMQL index=test step=5m foo / on(bar) baz",
-            containsString("queries with group modifiers are not supported at this time")
-        );
+    public void testVectorMatchingRequiresAggregatedSeries() {
+        // Arithmetic vector matching (on/ignoring/group_left/group_right) is supported, but v0 joins on the operands'
+        // aggregation grouping labels, so both sides must be an aggregated instant vector (e.g. sum by (...)); bare
+        // selectors like these have no grouping labels to match on.
+        tsdb.error("PROMQL index=test step=5m foo / on(bar) baz", containsString("only supported between aggregated series"));
     }
 
     public void testNonScalarComparison() {

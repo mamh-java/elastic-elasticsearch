@@ -61,7 +61,12 @@ public final class VectorBinarySet extends VectorBinaryOperator {
      */
     @Override
     public List<Attribute> output() {
-        return unionOutputByName(List.of(left(), right()));
+        // `or` combines series from both sides, so its schema is the union of both label sets. `and`/`unless` keep (a subset of) the
+        // left operand's series, so they carry only the left operand's labels.
+        return switch (op) {
+            case UNION -> unionOutputByName(List.of(left(), right()));
+            case INTERSECT, SUBTRACT -> left().output();
+        };
     }
 
     /**

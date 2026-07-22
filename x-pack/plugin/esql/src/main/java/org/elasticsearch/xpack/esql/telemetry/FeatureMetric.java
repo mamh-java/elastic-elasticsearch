@@ -53,6 +53,7 @@ import org.elasticsearch.xpack.esql.plan.logical.fuse.Fuse;
 import org.elasticsearch.xpack.esql.plan.logical.fuse.FuseScoreEval;
 import org.elasticsearch.xpack.esql.plan.logical.inference.Completion;
 import org.elasticsearch.xpack.esql.plan.logical.inference.Rerank;
+import org.elasticsearch.xpack.esql.plan.logical.join.EqJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.LookupJoin;
 import org.elasticsearch.xpack.esql.plan.logical.join.SubqueryHashJoin;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalRelation;
@@ -148,7 +149,8 @@ public enum FeatureMetric {
         ViewShadowRelation.class, // CPS lenient-lookup marker, stripped by ViewCompactionPostAnalysis after ResolveTable
         DatasetShadowRelation.class, // CPS lenient-lookup marker for datasets, stripped by StripDatasetShadowRelations after ResolveTable
         TimeSeriesCollapse.class, // TS_COLLAPSE is rolled into the PROMQL counter via the wrapped PromqlCommand below it
-        TopNBy.class // produced by PROMQL `or` (union) translation for left-preferring dedup; otherwise only appears post-analysis
+        TopNBy.class, // produced by PROMQL `or` (union) translation for left-preferring dedup; otherwise only appears post-analysis
+        EqJoin.class // produced by PROMQL vector-matching translation; rolled into the PROMQL counter via the wrapped PromqlCommand
     );
 
     private Predicate<LogicalPlan> planCheck;

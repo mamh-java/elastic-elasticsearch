@@ -99,7 +99,17 @@ public abstract sealed class VectorBinaryOperator extends BinaryPlan implements 
         List<Attribute> rightAttrs = right().output();
         Set<String> leftLabels = extractLabelNames(leftAttrs);
         Set<String> rightLabels = extractLabelNames(rightAttrs);
-        if (matchFilter() == VectorMatch.Filter.ON) {
+        if (match != null && match.grouping() == VectorMatch.Joining.LEFT) {
+            // group_left: the left ("many") side keeps its full label set; group_left(labels) additionally copies those labels from the
+            // right ("one") side onto the result.
+            outputLabels = new HashSet<>(leftLabels);
+            outputLabels.addAll(match.groupingLabels());
+        } else if (match != null && match.grouping() == VectorMatch.Joining.RIGHT) {
+            // group_right: the right ("many") side keeps its full label set; group_right(labels) additionally copies those labels from the
+            // left ("one") side onto the result.
+            outputLabels = new HashSet<>(rightLabels);
+            outputLabels.addAll(match.groupingLabels());
+        } else if (matchFilter() == VectorMatch.Filter.ON) {
             outputLabels = new HashSet<>(match.filterLabels());
         } else if (matchFilter() == VectorMatch.Filter.IGNORING) {
             outputLabels = new HashSet<>(leftLabels);
