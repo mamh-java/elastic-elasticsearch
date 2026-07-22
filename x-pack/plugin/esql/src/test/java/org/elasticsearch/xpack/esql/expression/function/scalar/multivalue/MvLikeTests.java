@@ -49,9 +49,7 @@ public class MvLikeTests extends AbstractScalarFunctionTestCase {
     private static Matcher<String> evaluatorMatcher() {
         return anyOf(
             startsWith("MvAutomataMatchEvaluator[field=Attribute[channel=0], pattern=digraph Automaton {\n"),
-            startsWith("MvLikePrefixEvaluator[field=Attribute[channel=0], prefix="),
-            startsWith("MvLikeSuffixEvaluator[field=Attribute[channel=0], suffix="),
-            startsWith("MvLikeContainsEvaluator[field=Attribute[channel=0], literal=")
+            startsWith("MvLikeAffixMatchEvaluator[field=Attribute[channel=0], shape=")
         );
     }
 

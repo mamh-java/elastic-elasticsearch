@@ -1487,6 +1487,50 @@ public class EsqlActionIT extends AbstractEsqlIntegTestCase {
      * instead. The two must select identical id sets, in both polarities. Any divergence between the automaton (or an
      * affix fast path) and the pushed query fails here, which is the only place the exactness claim is actually tested.
      */
+    /**
+     * The differential above indexes multivalued docs, so its field block goes through the evaluator's block path. This
+     * one indexes only single-valued docs — every position has exactly one value and no nulls — so the loaded block is a
+     * vector and the evaluator takes its {@code asVector()} fast path. Proves that fast path agrees with the pushed
+     * query, which the multivalued differential cannot reach.
+     */
+    public void testMvLikeSingleValuedFieldMatchesPushed() {
+        String index = "mv_like_single_valued";
+        assertAcked(client().admin().indices().prepareCreate(index).setMapping("id", "type=keyword", "v", "type=keyword").get());
+        // Every doc has exactly one value — no multivalue, no missing field — so the field block is a vector.
+        List<String> values = List.of("anna", "bob", "annabel", "banana", "a*b", "a?b", "ANNA", "", "xanna");
+        for (int i = 0; i < values.size(); i++) {
+            prepareIndex(index).setSource("id", "d" + i, "v", values.get(i)).get();
+        }
+        client().admin().indices().prepareRefresh(index).get();
+
+        List<String> patterns = List.of("ann*", "*na", "*nn*", "anna", "a?b", "a\\\\*b", "*", "", "zzz*");
+        for (String pattern : patterns) {
+            for (String polarity : List.of("", "not ")) {
+                String pushed = "from " + index + " | where " + polarity + "mv_like(v, \"" + pattern + "\") | keep id | sort id";
+                String evaluated = "from "
+                    + index
+                    + " | eval x = mv_like(v, \""
+                    + pattern
+                    + "\") | where "
+                    + polarity
+                    + "x | keep id | sort id";
+                List<Object> pushedIds;
+                List<Object> evaluatedIds;
+                try (EsqlQueryResponse results = run(pushed)) {
+                    pushedIds = getValuesList(results).stream().map(r -> r.get(0)).toList();
+                }
+                try (EsqlQueryResponse results = run(evaluated)) {
+                    evaluatedIds = getValuesList(results).stream().map(r -> r.get(0)).toList();
+                }
+                assertThat(
+                    "pushed and evaluated (vector path) disagree for pattern [" + pattern + "] polarity [" + polarity + "]",
+                    pushedIds,
+                    equalTo(evaluatedIds)
+                );
+            }
+        }
+    }
+
     public void testMvLikePushedMatchesEvaluator() {
         String index = "mv_like_differential";
         assertAcked(client().admin().indices().prepareCreate(index).setMapping("id", "type=keyword", "v", "type=keyword").get());
