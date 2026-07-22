@@ -8,7 +8,7 @@
 package org.elasticsearch.xpack.inference.external.http.retry;
 
 import org.apache.http.client.protocol.HttpClientContext;
-import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.LogManager;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchStatusException;
 import org.elasticsearch.ExceptionsHelper;
@@ -18,6 +18,7 @@ import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.inference.InferenceServiceResults;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xpack.inference.common.SizeLimitInputStream;
@@ -110,7 +111,7 @@ public class RetryingHttpSender implements RequestSender {
             ActionListener<InferenceServiceResults> listener
         ) {
             super(
-                Objects.requireNonNull(logger),
+                LogManager.getLogger(Objects.requireNonNull(logger).getName()),
                 threadPool,
                 retrySettings.getInitialDelay(),
                 retrySettings.getMaxDelayBound(),
