@@ -4583,6 +4583,65 @@ public class LogicalPlanOptimizerTests extends AbstractLogicalPlanOptimizerTests
     }
 
     /**
+     * mv_like/mv_rlike validate their pattern in postOptimizationVerification (after constant folding), so a pattern
+     * that folds to a constant is accepted — here CONCAT of two literals — even though it is not a literal at analysis.
+     */
+    public void testMvLikePatternFoldsToConstant() {
+        assertNotNull(plan("from test | where mv_like(first_name, concat(\"Ann\", \"*\"))"));
+        assertNotNull(plan("from test | where mv_rlike(first_name, concat(\"Ann\", \".*\"))"));
+        // A constant-propagated EVAL variable is likewise accepted.
+        assertNotNull(plan("from test | eval p = \"Ann*\" | where mv_like(first_name, p)"));
+    }
+
+    public void testMvLikePatternMustBeConstant() {
+        for (String fn : List.of("mv_like", "mv_rlike")) {
+            VerificationException e = expectThrows(
+                VerificationException.class,
+                () -> plan("from test | where " + fn + "(first_name, last_name)")
+            );
+            assertThat(e.getMessage(), containsString("second argument of [" + fn + "(first_name, last_name)] must be a constant"));
+        }
+    }
+
+    public void testMvLikePatternMustNotBeNull() {
+        // A null literal pattern passes analysis (null is type-compatible), but folds to null and is rejected here.
+        VerificationException e = expectThrows(VerificationException.class, () -> plan("from test | where mv_like(first_name, null)"));
+        assertThat(e.getMessage(), containsString("must not be null"));
+        // So does a pattern that only folds to null after optimization.
+        VerificationException c = expectThrows(
+            VerificationException.class,
+            () -> plan("from test | where mv_like(first_name, concat(\"a\", null))")
+        );
+        assertThat(c.getMessage(), containsString("must not be null"));
+    }
+
+    public void testMvLikePatternMustBeSingleValued() {
+        VerificationException e = expectThrows(
+            VerificationException.class,
+            () -> plan("from test | where mv_like(first_name, [\"\", \"\"])")
+        );
+        assertThat(e.getMessage(), containsString("must be a single pattern string"));
+        VerificationException r = expectThrows(
+            VerificationException.class,
+            () -> plan("from test | where mv_rlike(first_name, [\"\", \"\"])")
+        );
+        assertThat(r.getMessage(), containsString("must be a single pattern string"));
+    }
+
+    public void testMvLikePatternMustBeWellFormed() {
+        VerificationException wildcard = expectThrows(
+            VerificationException.class,
+            () -> plan("from test | where mv_like(first_name, \"foo\\\\\")")
+        );
+        assertThat(wildcard.getMessage(), containsString("invalid pattern"));
+        VerificationException regex = expectThrows(
+            VerificationException.class,
+            () -> plan("from test | where mv_rlike(first_name, \"(\")")
+        );
+        assertThat(regex.getMessage(), containsString("invalid pattern"));
+    }
+
+    /**
      * {@snippet lang="text":
      * Project[[bucket(salary, 1000.) + 1{r}#3, bucket(salary, 1000.){r}#5]]
      *  \_Eval[[bucket(salary, 1000.){r}#5 + 1[INTEGER] AS bucket(salary, 1000.) + 1]]

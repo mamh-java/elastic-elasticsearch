@@ -126,58 +126,45 @@ public class MvLikeTests extends AbstractScalarFunctionTestCase {
     }
 
     /**
-     * A two-valued variant of {@link org.elasticsearch.xpack.esql.expression.function.AbstractFunctionTestCase#anyNullIsNull}:
-     * mv_like never returns null, so a null argument yields {@code false} and a null-typed argument folds to a constant
-     * false. Modeled on the same helper in {@code MvIntersectsTests} / {@code MvInRangeTests}.
+     * A field-only variant of {@link org.elasticsearch.xpack.esql.expression.function.AbstractFunctionTestCase#anyNullIsNull}:
+     * mv_like never returns null, so a null or null-typed <em>field</em> yields {@code false}. Only the field (position 0)
+     * is nulled — a null <em>pattern</em> is an author error rejected in postOptimizationVerification, so it never reaches
+     * the evaluator and cannot be a value case here (it is covered as an error in {@code MvLikeErrorTests} and the
+     * optimizer tests). Modeled on the same helper in {@code MvIntersectsTests} / {@code MvInRangeTests}.
      */
     private static List<TestCaseSupplier> anyNullIsNull(List<TestCaseSupplier> testCaseSuppliers) {
         List<TestCaseSupplier> suppliers = new ArrayList<>(testCaseSuppliers);
         Set<List<DataType>> uniqueSignatures = new HashSet<>();
         for (TestCaseSupplier original : testCaseSuppliers) {
             boolean firstTimeSeenSignature = uniqueSignatures.add(original.types());
-            for (int typeIndex = 0; typeIndex < original.types().size(); typeIndex++) {
-                int nullPosition = typeIndex;
+            int nullPosition = 0; // the field only
 
-                // A runtime null in an otherwise well-typed argument: still the ordinary evaluator, result false.
-                suppliers.add(new TestCaseSupplier("G1: " + original.name() + " null in " + nullPosition, original.types(), () -> {
-                    TestCaseSupplier.TestCase originalTestCase = original.get();
-                    List<TestCaseSupplier.TypedData> typeDataWithNull = new ArrayList<>(originalTestCase.getData());
-                    var data = typeDataWithNull.get(nullPosition);
-                    typeDataWithNull.set(nullPosition, data.withData(data.isMultiRow() ? Collections.singletonList(null) : null));
-                    // Nulling the field leaves the ordinary evaluator running over a null block; nulling the pattern
-                    // (always a forced literal) folds the whole predicate away before an evaluator is built.
-                    return new TestCaseSupplier.TestCase(
-                        typeDataWithNull,
-                        nullPosition == 1 ? equalTo("ConstantFalse") : originalTestCase.evaluatorToString(),
-                        DataType.BOOLEAN,
-                        is(false)
+            // A runtime null field: still the ordinary evaluator over a null block, result false.
+            suppliers.add(new TestCaseSupplier("G1: " + original.name() + " null field", original.types(), () -> {
+                TestCaseSupplier.TestCase originalTestCase = original.get();
+                List<TestCaseSupplier.TypedData> typeDataWithNull = new ArrayList<>(originalTestCase.getData());
+                var data = typeDataWithNull.get(nullPosition);
+                typeDataWithNull.set(nullPosition, data.withData(data.isMultiRow() ? Collections.singletonList(null) : null));
+                return new TestCaseSupplier.TestCase(typeDataWithNull, originalTestCase.evaluatorToString(), DataType.BOOLEAN, is(false));
+            }));
+
+            // A null-typed field: the predicate folds to a constant false before any evaluator is built.
+            if (firstTimeSeenSignature) {
+                var typesWithNull = new ArrayList<>(original.types());
+                typesWithNull.set(nullPosition, DataType.NULL);
+                if (uniqueSignatures.add(typesWithNull)) {
+                    suppliers.add(
+                        new TestCaseSupplier(
+                            "G2: " + typesWithNull.stream().map(Objects::toString).collect(Collectors.joining(" ")) + " null field",
+                            typesWithNull,
+                            () -> {
+                                TestCaseSupplier.TestCase originalTestCase = original.get();
+                                var typeDataWithNull = new ArrayList<>(originalTestCase.getData());
+                                typeDataWithNull.set(nullPosition, typeDataWithNull.get(nullPosition).isMultiRow() ? MULTI_ROW_NULL : NULL);
+                                return new TestCaseSupplier.TestCase(typeDataWithNull, "ConstantFalse", DataType.BOOLEAN, is(false));
+                            }
+                        )
                     );
-                }));
-
-                // A null-typed argument: the whole predicate folds to a constant false before any evaluator is built.
-                if (firstTimeSeenSignature) {
-                    var typesWithNull = new ArrayList<>(original.types());
-                    typesWithNull.set(nullPosition, DataType.NULL);
-                    if (uniqueSignatures.add(typesWithNull)) {
-                        suppliers.add(
-                            new TestCaseSupplier(
-                                "G2: "
-                                    + typesWithNull.stream().map(Objects::toString).collect(Collectors.joining(" "))
-                                    + " null in "
-                                    + nullPosition,
-                                typesWithNull,
-                                () -> {
-                                    TestCaseSupplier.TestCase originalTestCase = original.get();
-                                    var typeDataWithNull = new ArrayList<>(originalTestCase.getData());
-                                    typeDataWithNull.set(
-                                        nullPosition,
-                                        typeDataWithNull.get(nullPosition).isMultiRow() ? MULTI_ROW_NULL : NULL
-                                    );
-                                    return new TestCaseSupplier.TestCase(typeDataWithNull, "ConstantFalse", DataType.BOOLEAN, is(false));
-                                }
-                            )
-                        );
-                    }
                 }
             }
         }

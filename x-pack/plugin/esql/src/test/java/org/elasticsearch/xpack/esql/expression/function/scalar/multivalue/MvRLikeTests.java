@@ -101,51 +101,38 @@ public class MvRLikeTests extends AbstractScalarFunctionTestCase {
         return parameterSuppliersFromTypedData(anyNullIsNull(suppliers));
     }
 
-    /** The two-valued null wrap — see {@link MvLikeTests#parameters} for why the base helper cannot be used. */
+    /** Field-only null wrap — see {@link MvLikeTests} for why the base helper cannot be used and why only the field is nulled. */
     private static List<TestCaseSupplier> anyNullIsNull(List<TestCaseSupplier> testCaseSuppliers) {
         List<TestCaseSupplier> suppliers = new ArrayList<>(testCaseSuppliers);
         Set<List<DataType>> uniqueSignatures = new HashSet<>();
         for (TestCaseSupplier original : testCaseSuppliers) {
             boolean firstTimeSeenSignature = uniqueSignatures.add(original.types());
-            for (int typeIndex = 0; typeIndex < original.types().size(); typeIndex++) {
-                int nullPosition = typeIndex;
+            int nullPosition = 0; // the field only; a null pattern is an error, covered in the error and optimizer tests
 
-                suppliers.add(new TestCaseSupplier("G1: " + original.name() + " null in " + nullPosition, original.types(), () -> {
-                    TestCaseSupplier.TestCase originalTestCase = original.get();
-                    List<TestCaseSupplier.TypedData> typeDataWithNull = new ArrayList<>(originalTestCase.getData());
-                    var data = typeDataWithNull.get(nullPosition);
-                    typeDataWithNull.set(nullPosition, data.withData(data.isMultiRow() ? Collections.singletonList(null) : null));
-                    return new TestCaseSupplier.TestCase(
-                        typeDataWithNull,
-                        nullPosition == 1 ? equalTo("ConstantFalse") : originalTestCase.evaluatorToString(),
-                        DataType.BOOLEAN,
-                        is(false)
+            suppliers.add(new TestCaseSupplier("G1: " + original.name() + " null field", original.types(), () -> {
+                TestCaseSupplier.TestCase originalTestCase = original.get();
+                List<TestCaseSupplier.TypedData> typeDataWithNull = new ArrayList<>(originalTestCase.getData());
+                var data = typeDataWithNull.get(nullPosition);
+                typeDataWithNull.set(nullPosition, data.withData(data.isMultiRow() ? Collections.singletonList(null) : null));
+                return new TestCaseSupplier.TestCase(typeDataWithNull, originalTestCase.evaluatorToString(), DataType.BOOLEAN, is(false));
+            }));
+
+            if (firstTimeSeenSignature) {
+                var typesWithNull = new ArrayList<>(original.types());
+                typesWithNull.set(nullPosition, DataType.NULL);
+                if (uniqueSignatures.add(typesWithNull)) {
+                    suppliers.add(
+                        new TestCaseSupplier(
+                            "G2: " + typesWithNull.stream().map(Objects::toString).collect(Collectors.joining(" ")) + " null field",
+                            typesWithNull,
+                            () -> {
+                                TestCaseSupplier.TestCase originalTestCase = original.get();
+                                var typeDataWithNull = new ArrayList<>(originalTestCase.getData());
+                                typeDataWithNull.set(nullPosition, typeDataWithNull.get(nullPosition).isMultiRow() ? MULTI_ROW_NULL : NULL);
+                                return new TestCaseSupplier.TestCase(typeDataWithNull, "ConstantFalse", DataType.BOOLEAN, is(false));
+                            }
+                        )
                     );
-                }));
-
-                if (firstTimeSeenSignature) {
-                    var typesWithNull = new ArrayList<>(original.types());
-                    typesWithNull.set(nullPosition, DataType.NULL);
-                    if (uniqueSignatures.add(typesWithNull)) {
-                        suppliers.add(
-                            new TestCaseSupplier(
-                                "G2: "
-                                    + typesWithNull.stream().map(Objects::toString).collect(Collectors.joining(" "))
-                                    + " null in "
-                                    + nullPosition,
-                                typesWithNull,
-                                () -> {
-                                    TestCaseSupplier.TestCase originalTestCase = original.get();
-                                    var typeDataWithNull = new ArrayList<>(originalTestCase.getData());
-                                    typeDataWithNull.set(
-                                        nullPosition,
-                                        typeDataWithNull.get(nullPosition).isMultiRow() ? MULTI_ROW_NULL : NULL
-                                    );
-                                    return new TestCaseSupplier.TestCase(typeDataWithNull, "ConstantFalse", DataType.BOOLEAN, is(false));
-                                }
-                            )
-                        );
-                    }
                 }
             }
         }

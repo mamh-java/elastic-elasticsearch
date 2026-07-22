@@ -16,6 +16,7 @@ import org.hamcrest.Matcher;
 
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.hamcrest.Matchers.equalTo;
 
@@ -35,9 +36,17 @@ public class MvLikeErrorTests extends ErrorsForCasesWithoutExamplesTestCase {
     }
 
     /**
-     * Mirrors {@link MvLike}'s resolveType: both arguments must be string types, except that a null-typed field
-     * resolves — it folds to {@code false} at runtime, per the two-valued contract — and so carries no error message.
+     * Mirrors {@link MvLike}'s resolveType: the pattern must be a string type — a null-typed literal pattern is an error
+     * (it is author-supplied, not data-derived). The field is more lenient: a null-typed field resolves and folds to
+     * {@code false} at runtime, per the two-valued contract, so it carries no error message.
      */
+    @Override
+    protected Stream<List<DataType>> testCandidates(List<TestCaseSupplier> cases, Set<List<DataType>> valid) {
+        // A null-typed pattern (position 1) resolves at analysis — null is type-compatible — and is rejected later in
+        // postOptimizationVerification, not resolveType. So don't fuzz it as an "expected unresolved" invalid signature.
+        return super.testCandidates(cases, valid).filter(sig -> sig.get(1) != DataType.NULL);
+    }
+
     @Override
     protected Matcher<String> expectedTypeErrorMatcher(List<Set<DataType>> validPerPosition, List<DataType> signature) {
         DataType field = signature.get(0);

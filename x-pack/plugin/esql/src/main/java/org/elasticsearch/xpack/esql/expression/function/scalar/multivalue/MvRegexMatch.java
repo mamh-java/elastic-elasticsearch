@@ -12,7 +12,10 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.lucene.BytesRefs;
 import org.elasticsearch.compute.expression.ConstantEvaluators;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.xpack.esql.capabilities.PostOptimizationVerificationAware;
 import org.elasticsearch.xpack.esql.capabilities.TranslationAware;
+import org.elasticsearch.xpack.esql.common.Failure;
+import org.elasticsearch.xpack.esql.common.Failures;
 import org.elasticsearch.xpack.esql.core.InvalidArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
@@ -28,8 +31,8 @@ import java.io.IOException;
 
 import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.ParamOrdinal.FIRST;
 import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.ParamOrdinal.SECOND;
-import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isFoldable;
 import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isString;
+import static org.elasticsearch.xpack.esql.expression.Validations.isFoldable;
 
 /**
  * Shared base for the any-value pattern-matching functions {@link MvLike} (wildcard) and {@link MvRLike} (regex).
@@ -43,7 +46,11 @@ import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isStr
  * folding, and pushdown gating are identical, so they live here once. Subclasses supply the pattern grammar
  * ({@link #validatePattern}), the evaluator ({@link #buildEvaluator}), and the pushed query ({@link #asQuery}).
  */
-public abstract class MvRegexMatch extends BinaryScalarFunction implements EvaluatorMapper, TranslationAware {
+public abstract class MvRegexMatch extends BinaryScalarFunction
+    implements
+        EvaluatorMapper,
+        TranslationAware,
+        PostOptimizationVerificationAware {
 
     protected MvRegexMatch(Source source, Expression field, Expression pattern) {
         super(source, field, pattern);
@@ -59,49 +66,60 @@ public abstract class MvRegexMatch extends BinaryScalarFunction implements Evalu
             return new TypeResolution("Unresolved children");
         }
 
-        // A null-typed argument on either side is a valid signature: the whole predicate folds to false, per the
-        // two-valued contract — a null field has no value to match, and a null pattern matches nothing.
+        // Types only. A null-typed field is a valid signature (the whole predicate folds to false, per the two-valued
+        // contract — a null field has no value to match). The pattern must be a string type; a null-typed literal
+        // pattern (e.g. mv_like(field, null)) fails here with a clean type error. Whether the pattern is a *constant*,
+        // and whether it is a single, non-null, well-formed pattern, is checked in postOptimizationVerification — after
+        // constant folding and propagation — so that expressions that fold to a constant (CONCAT("a","*"), a ROW var)
+        // are accepted.
         if (left().dataType() != DataType.NULL) {
             TypeResolution resolution = isString(left(), sourceText(), FIRST);
             if (resolution.unresolved()) {
                 return resolution;
             }
         }
-        if (right().dataType() == DataType.NULL) {
-            return TypeResolution.TYPE_RESOLVED;
-        }
+        return isString(right(), sourceText(), SECOND);
+    }
 
-        TypeResolution resolution = isString(right(), sourceText(), SECOND).and(isFoldable(right(), sourceText(), SECOND));
-        if (resolution.unresolved()) {
-            return resolution;
+    /**
+     * The pattern must be a single, non-null, well-formed constant string. This runs after the logical optimizer has
+     * folded and propagated constants, so {@code CONCAT("a","*")} or a constant {@code ROW} variable are accepted here
+     * even though they are not literals at analysis time — a normal expression should allow the full expressiveness of
+     * the language. A pattern that is not foldable, folds to null, folds to a multivalue, or is malformed is a mistake
+     * in the query (the pattern is author-supplied, not data-derived) and fails loudly rather than silently matching
+     * nothing.
+     */
+    @Override
+    public final void postOptimizationVerification(Failures failures) {
+        Failure notConstant = isFoldable(right(), sourceText(), SECOND);
+        if (notConstant != null) {
+            failures.add(notConstant);
+            return;
         }
-
-        // The pattern is a string type and foldable, but a *multivalued* string constant (e.g. ["a*", "b*"]) also
-        // satisfies both — and folds to a List, which BytesRefs.toString renders as garbage that happens to be a valid
-        // pattern. Reject anything that is not a single scalar string before it silently matches nothing.
         Object folded = right().fold(FoldContext.small());
         if (folded == null) {
-            // A well-typed literal that holds null matches nothing; it folds to false rather than erroring.
-            return TypeResolution.TYPE_RESOLVED;
+            failures.add(Failure.fail(right(), "second argument of [{}] must not be null", sourceText()));
+            return;
         }
         if (folded instanceof BytesRef == false && folded instanceof String == false) {
-            return new TypeResolution(
-                "second argument of [" + sourceText() + "] must be a single pattern string, found value [" + folded + "]"
+            failures.add(
+                Failure.fail(right(), "second argument of [{}] must be a single pattern string, found value [{}]", sourceText(), folded)
             );
+            return;
         }
-
-        // Build the pattern here so a malformed or over-complex one is an analysis-time error rather than a planner
-        // crash. AbstractStringPattern.createAutomaton already converts a determinize blow-up (TooComplexToDeterminize)
-        // into IllegalArgumentException, so the two exception types below cover every validatePattern failure.
+        // Build the pattern so a malformed or over-complex one is an analysis-time error rather than a planner crash.
+        // AbstractStringPattern.createAutomaton converts a determinize blow-up (TooComplexToDeterminize) into
+        // IllegalArgumentException, so the two exception types cover every validatePattern failure.
         try {
             validatePattern(BytesRefs.toString(folded));
         } catch (InvalidArgumentException | IllegalArgumentException e) {
-            return new TypeResolution("Invalid pattern [" + BytesRefs.toString(folded) + "] for [" + sourceText() + "]: " + e.getMessage());
+            failures.add(
+                Failure.fail(right(), "invalid pattern [{}] for [{}]: {}", BytesRefs.toString(folded), sourceText(), e.getMessage())
+            );
         }
-        return TypeResolution.TYPE_RESOLVED;
     }
 
-    /** The folded pattern as a string, or {@code null} if the pattern folds to null. Only valid after type resolution. */
+    /** The folded pattern as a string. Only valid after {@link #postOptimizationVerification}, i.e. on the physical plan. */
     protected final String patternString() {
         return BytesRefs.toString(right().fold(FoldContext.small()));
     }
@@ -123,9 +141,9 @@ public abstract class MvRegexMatch extends BinaryScalarFunction implements Evalu
 
     @Override
     public final ExpressionEvaluator.Factory toEvaluator(ToEvaluator toEvaluator) {
-        // A null field has no values to match and a null pattern matches nothing, so either makes the predicate
-        // constant false — whether the null arrives as a null-typed argument or as a well-typed literal holding null.
-        if (left().dataType() == DataType.NULL || right().dataType() == DataType.NULL || patternString() == null) {
+        // A null-typed field has no values to match, so the predicate is constant false. The pattern is a guaranteed
+        // valid, non-null constant string by now — postOptimizationVerification would have failed the query otherwise.
+        if (left().dataType() == DataType.NULL) {
             return ConstantEvaluators.CONSTANT_FALSE_FACTORY;
         }
         return buildEvaluator(toEvaluator, patternString());
@@ -159,10 +177,8 @@ public abstract class MvRegexMatch extends BinaryScalarFunction implements Evalu
         if (left().dataType() == DataType.TEXT) {
             return Translatable.NO;
         }
-        // An absent or null pattern folds the predicate to false long before this; there is no query to build.
-        if (right().dataType() == DataType.NULL || patternString() == null) {
-            return Translatable.NO;
-        }
+        // The pattern is a valid non-null constant string here (postOptimizationVerification guarantees it); a subclass
+        // may still decline to push a particular pattern (MvLike refuses the empty wildcard).
         if (patternPushable(patternString()) == false) {
             return Translatable.NO;
         }

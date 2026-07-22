@@ -2555,6 +2555,33 @@ matched:boolean | unmatched:boolean
 false           | true
 ;
 
+// The pattern need only be a constant after folding, not a literal: CONCAT of two literals is accepted (the
+// constant-ness is checked in postOptimizationVerification, after constant folding).
+mvLikeConstantFoldedPattern
+required_capability: fn_mv_like
+required_capability: fn_mv_rlike
+ROW names = ["Anna", "Bob"]
+| EVAL wildcard = mv_like(names, CONCAT("A", "*")), regex = mv_rlike(names, CONCAT("A", ".*"))
+| KEEP wildcard, regex
+;
+
+wildcard:boolean | regex:boolean
+true             | true
+;
+
+// mv_like/mv_rlike in a STATS ... WHERE filtered aggregation — the same per-row evaluator path, exercised as an
+// aggregation filter.
+mvLikeStatsWhere
+required_capability: fn_mv_like
+required_capability: fn_mv_rlike
+ROW names = ["Anna", "Bob"]
+| STATS a = COUNT(*) WHERE mv_like(names, "A*"), b = COUNT(*) WHERE mv_rlike(names, "A.*"), none = COUNT(*) WHERE mv_like(names, "Z*")
+;
+
+a:long | b:long | none:long
+1      | 1      | 0
+;
+
 // Real multivalued keyword field, so field_extract coverage runs (ROW literals do not exercise it).
 mvLikeField
 required_capability: fn_mv_like
