@@ -62,10 +62,12 @@ public class MvAutomataMatch {
         }
 
         ByteRunAutomaton run = new ByteRunAutomaton(automaton, true);
-        return new Factory(source, field, run, AutomataMatch.toDot(automaton));
+        // source is accepted for call-site symmetry with MvLikeAffixMatch and the generated evaluators, but these
+        // two-valued functions never emit a warning, so nothing downstream needs it.
+        return new Factory(field, run, AutomataMatch.toDot(automaton));
     }
 
-    private record Factory(Source source, ExpressionEvaluator.Factory field, ByteRunAutomaton automaton, String pattern)
+    private record Factory(ExpressionEvaluator.Factory field, ByteRunAutomaton automaton, String pattern)
         implements
             ExpressionEvaluator.Factory {
         @Override

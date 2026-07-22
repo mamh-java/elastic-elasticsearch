@@ -4639,6 +4639,35 @@ public class LogicalPlanOptimizerTests extends AbstractLogicalPlanOptimizerTests
             () -> plan("from test | where mv_rlike(first_name, \"(\")")
         );
         assertThat(regex.getMessage(), containsString("invalid pattern"));
+        // An over-complex wildcard (determinize work-limit) also fails as an invalid pattern.
+        VerificationException complex = expectThrows(
+            VerificationException.class,
+            () -> plan("from test | where mv_like(first_name, \"" + "*ab".repeat(200) + "\")")
+        );
+        assertThat(complex.getMessage(), containsString("invalid pattern"));
+    }
+
+    /**
+     * A constant field folds the whole predicate (through the evaluator) before the LogicalVerifier runs, so the
+     * pattern checks must guard that fold path too — otherwise a null pattern NPEs and a multivalue pattern silently
+     * folds to false. Each bad pattern must fail; a valid one still folds normally.
+     */
+    public void testMvLikeConstantFieldStillValidatesPattern() {
+        for (String q : List.of(
+            "row x = mv_like(\"abc\", null)",
+            "row x = mv_like(\"abc\", [\"a*\", \"b*\"])",
+            "row x = mv_rlike(\"abc\", null)",
+            "row x = mv_rlike(\"abc\", [\"a.*\", \"b.*\"])"
+        )) {
+            Exception e = expectThrows(Exception.class, () -> plan(q));
+            assertThat(
+                "expected [" + q + "] to fail with a pattern error",
+                e.getMessage(),
+                anyOf(containsString("must not be null"), containsString("must be a single pattern string"))
+            );
+        }
+        // A valid constant pattern over a constant field folds normally (to false here) with no error.
+        assertNotNull(plan("row x = mv_like(\"abc\", \"a*\")"));
     }
 
     /**

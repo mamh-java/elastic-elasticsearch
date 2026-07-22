@@ -1479,19 +1479,10 @@ public class EsqlActionIT extends AbstractEsqlIntegTestCase {
     }
 
     /**
-     * The differential that proves mv_like's pushdown is exact rather than merely asserting it.
-     * <p>
-     * For every pattern in the corpus, two queries run over identical data on identical shards: {@code WHERE mv_like(v, p)},
-     * which pushes to a bare Lucene wildcard query, and {@code EVAL x = mv_like(v, p) | WHERE x}, where the reference
-     * attribute is not a FieldAttribute so isPushableFieldAttribute declines and the compute-engine evaluator runs
-     * instead. The two must select identical id sets, in both polarities. Any divergence between the automaton (or an
-     * affix fast path) and the pushed query fails here, which is the only place the exactness claim is actually tested.
-     */
-    /**
-     * The differential above indexes multivalued docs, so its field block goes through the evaluator's block path. This
-     * one indexes only single-valued docs — every position has exactly one value and no nulls — so the loaded block is a
-     * vector and the evaluator takes its {@code asVector()} fast path. Proves that fast path agrees with the pushed
-     * query, which the multivalued differential cannot reach.
+     * The companion to {@link #testMvLikePushedMatchesEvaluator}: that one indexes multivalued docs, so its field block
+     * goes through the evaluator's block path. This one indexes only single-valued docs — every position has exactly one
+     * value and no nulls — so the loaded block is a vector and the evaluator takes its {@code asVector()} fast path.
+     * Proves that fast path agrees with the pushed query, which the multivalued differential cannot reach.
      */
     public void testMvLikeSingleValuedFieldMatchesPushed() {
         String index = "mv_like_single_valued";
@@ -1531,6 +1522,15 @@ public class EsqlActionIT extends AbstractEsqlIntegTestCase {
         }
     }
 
+    /**
+     * The differential that proves mv_like's pushdown is exact rather than merely asserting it.
+     * <p>
+     * For every pattern in the corpus, two queries run over identical data on identical shards: {@code WHERE mv_like(v, p)},
+     * which pushes to a bare Lucene wildcard query, and {@code EVAL x = mv_like(v, p) | WHERE x}, where the reference
+     * attribute is not a FieldAttribute so isPushableFieldAttribute declines and the compute-engine evaluator runs
+     * instead. The two must select identical id sets, in both polarities. Any divergence between the automaton (or an
+     * affix fast path) and the pushed query fails here, which is the only place the exactness claim is actually tested.
+     */
     public void testMvLikePushedMatchesEvaluator() {
         String index = "mv_like_differential";
         assertAcked(client().admin().indices().prepareCreate(index).setMapping("id", "type=keyword", "v", "type=keyword").get());

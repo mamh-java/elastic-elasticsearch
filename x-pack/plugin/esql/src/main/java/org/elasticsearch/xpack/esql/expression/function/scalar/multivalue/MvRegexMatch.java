@@ -67,11 +67,11 @@ public abstract class MvRegexMatch extends BinaryScalarFunction
         }
 
         // Types only. A null-typed field is a valid signature (the whole predicate folds to false, per the two-valued
-        // contract — a null field has no value to match). The pattern must be a string type; a null-typed literal
-        // pattern (e.g. mv_like(field, null)) fails here with a clean type error. Whether the pattern is a *constant*,
-        // and whether it is a single, non-null, well-formed pattern, is checked in postOptimizationVerification — after
-        // constant folding and propagation — so that expressions that fold to a constant (CONCAT("a","*"), a ROW var)
-        // are accepted.
+        // contract — a null field has no value to match). The pattern must be a string type. A null literal pattern is
+        // type-compatible and passes here; whether the pattern is a *constant*, and whether it is a single, non-null,
+        // well-formed pattern, is checked in postOptimizationVerification — after constant folding and propagation — so
+        // expressions that fold to a constant (CONCAT("a","*"), a ROW var) are accepted. (A constant field folds the
+        // whole predicate before that verifier; patternString() re-checks on that path so it fails loudly too.)
         if (left().dataType() != DataType.NULL) {
             TypeResolution resolution = isString(left(), sourceText(), FIRST);
             if (resolution.unresolved()) {
@@ -96,32 +96,44 @@ public abstract class MvRegexMatch extends BinaryScalarFunction
             failures.add(notConstant);
             return;
         }
-        Object folded = right().fold(FoldContext.small());
-        if (folded == null) {
-            failures.add(Failure.fail(right(), "second argument of [{}] must not be null", sourceText()));
+        String pattern;
+        try {
+            pattern = patternString(); // throws on a null or multivalue constant
+        } catch (InvalidArgumentException e) {
+            failures.add(Failure.fail(right(), e.getMessage()));
             return;
         }
-        if (folded instanceof BytesRef == false && folded instanceof String == false) {
-            failures.add(
-                Failure.fail(right(), "second argument of [{}] must be a single pattern string, found value [{}]", sourceText(), folded)
-            );
-            return;
-        }
-        // Build the pattern so a malformed or over-complex one is an analysis-time error rather than a planner crash.
+        // Build the pattern so a malformed or over-complex one is caught here rather than as a planner crash.
         // AbstractStringPattern.createAutomaton converts a determinize blow-up (TooComplexToDeterminize) into
         // IllegalArgumentException, so the two exception types cover every validatePattern failure.
         try {
-            validatePattern(BytesRefs.toString(folded));
+            validatePattern(pattern);
         } catch (InvalidArgumentException | IllegalArgumentException e) {
-            failures.add(
-                Failure.fail(right(), "invalid pattern [{}] for [{}]: {}", BytesRefs.toString(folded), sourceText(), e.getMessage())
-            );
+            failures.add(Failure.fail(right(), "invalid pattern [{}] for [{}]: {}", pattern, sourceText(), e.getMessage()));
         }
     }
 
-    /** The folded pattern as a string. Only valid after {@link #postOptimizationVerification}, i.e. on the physical plan. */
+    /**
+     * The folded pattern as a single, non-null string, or throws {@link InvalidArgumentException} if it folds to null
+     * or a multivalue. It validates rather than assuming a prior check: a constant field folds the whole predicate
+     * (through {@link #toEvaluator}) <em>before</em> {@link #postOptimizationVerification} runs, so without the checks
+     * here a null pattern would NPE and a multivalue pattern would silently match nothing. {@code postOptimization-}
+     * {@code Verification} turns the throw into a clean {@link Failures} entry; the constant-fold path lets it surface
+     * as a query error.
+     */
     protected final String patternString() {
-        return BytesRefs.toString(right().fold(FoldContext.small()));
+        Object folded = right().fold(FoldContext.small());
+        if (folded == null) {
+            throw new InvalidArgumentException("second argument of [{}] must not be null", sourceText());
+        }
+        if (folded instanceof BytesRef == false && folded instanceof String == false) {
+            throw new InvalidArgumentException(
+                "second argument of [{}] must be a single pattern string, found value [{}]",
+                sourceText(),
+                folded
+            );
+        }
+        return BytesRefs.toString(folded);
     }
 
     @Override
@@ -141,8 +153,10 @@ public abstract class MvRegexMatch extends BinaryScalarFunction
 
     @Override
     public final ExpressionEvaluator.Factory toEvaluator(ToEvaluator toEvaluator) {
-        // A null-typed field has no values to match, so the predicate is constant false. The pattern is a guaranteed
-        // valid, non-null constant string by now — postOptimizationVerification would have failed the query otherwise.
+        // A null-typed field has no values to match, so the predicate is constant false. patternString() validates the
+        // pattern (throwing on null/multivalue) rather than trusting a prior check: a constant field folds the whole
+        // predicate through here before postOptimizationVerification runs, so this path cannot assume the pattern was
+        // already checked.
         if (left().dataType() == DataType.NULL) {
             return ConstantEvaluators.CONSTANT_FALSE_FACTORY;
         }

@@ -126,9 +126,10 @@ public class MvLikeTests extends AbstractScalarFunctionTestCase {
     /**
      * A field-only variant of {@link org.elasticsearch.xpack.esql.expression.function.AbstractFunctionTestCase#anyNullIsNull}:
      * mv_like never returns null, so a null or null-typed <em>field</em> yields {@code false}. Only the field (position 0)
-     * is nulled — a null <em>pattern</em> is an author error rejected in postOptimizationVerification, so it never reaches
-     * the evaluator and cannot be a value case here (it is covered as an error in {@code MvLikeErrorTests} and the
-     * optimizer tests). Modeled on the same helper in {@code MvIntersectsTests} / {@code MvInRangeTests}.
+     * is nulled — a null <em>pattern</em> is an author error rejected before it can match (in postOptimizationVerification,
+     * or in {@code patternString} when the whole call is constant-folded), so it cannot be a value case here (it is
+     * covered as an error in {@code MvLikeErrorTests} and the optimizer tests). Modeled on the same helper in
+     * {@code MvIntersectsTests} / {@code MvInRangeTests}.
      */
     private static List<TestCaseSupplier> anyNullIsNull(List<TestCaseSupplier> testCaseSuppliers) {
         List<TestCaseSupplier> suppliers = new ArrayList<>(testCaseSuppliers);

@@ -38,6 +38,8 @@ public class MvLikeAffixMatch {
     }
 
     public static ExpressionEvaluator.Factory toEvaluator(Source source, ExpressionEvaluator.Factory field, Shape shape, BytesRef affix) {
+        // source is accepted for call-site symmetry with the generated evaluators, but this two-valued function never
+        // emits a warning, so nothing downstream needs it.
         return new Factory(field, shape, affix);
     }
 

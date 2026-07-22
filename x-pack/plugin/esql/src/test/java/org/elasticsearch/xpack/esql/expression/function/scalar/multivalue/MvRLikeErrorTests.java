@@ -36,8 +36,9 @@ public class MvRLikeErrorTests extends ErrorsForCasesWithoutExamplesTestCase {
     }
 
     /**
-     * Mirrors {@link MvRLike}'s resolveType: both arguments must be string types, the pattern must be a string type
-     * (a null-typed literal pattern is an error); a null-typed field resolves and folds to {@code false} at runtime.
+     * Mirrors {@link MvRLike}'s resolveType: both arguments must be string types. A null-typed literal pattern is an
+     * author error, but null is type-compatible so it passes resolveType and is rejected later in postOptimization-
+     * Verification (see the testCandidates filter below); a null-typed field resolves and folds to {@code false}.
      */
     @Override
     protected Stream<List<DataType>> testCandidates(List<TestCaseSupplier> cases, Set<List<DataType>> valid) {
